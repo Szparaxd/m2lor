@@ -11,14 +11,20 @@
 // bezpieczny do wywolania z dowolnego watku: kolejkuje funkcje, ktora GLOWNY watek gry wykona przy
 // najblizszej okazji (co klatke), juz trzymajac GIL. Wtedy dopiero wolamy PyRun_SimpleString.
 //
-// Kanal sterujacy: nazwany potok \\.\pipe\m2autopot. Radar (64-bit, "mozg") czyta HP i gdy trzeba
-// pic, pisze 1 bajt = indeks slotu (0..8). Potok przechodzi granice 32/64-bit trywialnie (to bajty).
+// Kanal sterujacy: nazwany potok \\.\pipe\m2autopot. Radar (64-bit, "mozg") pisze LINIE TEKSTU
+// zakonczona '\n' = komenda Pythona, ktora DLL wykonuje w grze, np.:
+//     player.RequestUseLocalQuickSlot(0)         (wypij slot 1 paska)
+//     import player,net\nfor s in ...: ...        (skan ekwipunku i picie wprost - przyszlosc)
+// Dzieki temu caly "rozum" moze zostac po stronie radaru, a DLL jest uniwersalnym wykonawca.
+// Potok przechodzi granice 32/64-bit trywialnie (to bajty).
 //
 // Budowa: build.bat (vcvars32 -> cl /LD /MT, 32-bit, pod GameCoreTop.exe/python27.dll).
 
 #include <windows.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define PIPE_NAME "\\\\.\\pipe\\m2autopot"
 
@@ -36,17 +42,16 @@ static PFN_GILRelease      p_GILRelease      = NULL;
 static void log_dbg(const char *s) { OutputDebugStringA(s); }
 
 // Wywolywane przez GLOWNY watek gry (trzyma GIL). Tu dopiero wolno dotykac Pythona.
-static int __cdecl pending_drink(void *arg)
+// arg = kopia skryptu (malloc w queue_script) - wykonujemy i zwalniamy.
+static int __cdecl pending_run(void *arg)
 {
-    int slot = (int)(intptr_t)arg;
-    char script[96];
-    _snprintf(script, sizeof(script),
-              "import player\nplayer.RequestUseLocalQuickSlot(%d)\n", slot);
+    char *script = (char *)arg;
     // Pending-call biegnie z GIL, ale Ensure/Release sa tu bezpieczne (rekurencyjne) i odporne
     // na ewentualne roznice wersji - wiec zostawiamy je obronnie.
     int st = p_GILEnsure ? p_GILEnsure() : 0;
     p_RunSimpleString(script);
     if (p_GILRelease) p_GILRelease(st);
+    free(script);
     return 0;
 }
 
@@ -62,15 +67,19 @@ static bool resolve_python(void)
     return p_AddPendingCall && p_RunSimpleString;
 }
 
-static void queue_drink(int slot)
+static void queue_script(const char *script)
 {
+    char *copy = _strdup(script);          // pending-call wykona sie pozniej - potrzebna wlasna kopia
+    if (!copy)
+        return;
     // Kolejka pending-calls bywa pelna (maly bufor) - ponawiamy chwile.
     for (int t = 0; t < 50; ++t) {
-        if (p_AddPendingCall(pending_drink, (void *)(intptr_t)slot) == 0)
+        if (p_AddPendingCall(pending_run, copy) == 0)
             return;
         Sleep(2);
     }
-    log_dbg("[autopot] kolejka pending-calls pelna - slot pominiety");
+    free(copy);
+    log_dbg("[autopot] kolejka pending-calls pelna - komenda pominieta");
 }
 
 static DWORD WINAPI server_thread(LPVOID)
@@ -104,12 +113,23 @@ static DWORD WINAPI server_thread(LPVOID)
                       ? TRUE
                       : (GetLastError() == ERROR_PIPE_CONNECTED);
         if (ok) {
+            // Komenda = skrypt UTF-8 zakonczony bajtem '\0' (NUL). NIE dzielimy po '\n', bo skrypt
+            // bywa wieloliniowy (petla po ekwipunku) - cala komenda idzie w jeden PyRun_SimpleString.
+            char cmd[4096];
+            size_t len = 0;
             unsigned char b;
             DWORD n;
-            // Jeden klient (radar) moze trzymac polaczenie i slac wiele bajtow po kolei.
             while (ReadFile(pipe, &b, 1, &n, NULL) && n == 1) {
-                if (b <= 8)
-                    queue_drink((int)b);
+                if (b == 0) {
+                    cmd[len] = 0;
+                    if (len)
+                        queue_script(cmd);
+                    len = 0;
+                } else if (len < sizeof(cmd) - 1) {
+                    cmd[len++] = (char)b;
+                } else {
+                    len = 0;                 // komenda za dluga - odrzucamy do nastepnego '\0'
+                }
             }
         }
         DisconnectNamedPipe(pipe);

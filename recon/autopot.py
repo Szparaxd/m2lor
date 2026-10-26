@@ -192,25 +192,35 @@ def dll_loaded():
     return False
 
 
+def _send_raw(data):
+    """Wysyla surowe bajty jednym otwarciem potoku. True, gdy wszystko zapisane."""
+    h = _open_pipe()
+    if h is None:
+        return False
+    n = wintypes.DWORD(0)
+    ok = bool(k32.WriteFile(h, data, len(data), ctypes.byref(n), None)) and n.value == len(data)
+    k32.CloseHandle(h)
+    return ok
+
+
+def send_command(text):
+    """Wysyla skrypt Pythona do wykonania w grze (DLL). Komenda konczy sie bajtem NUL (framing),
+    wiec skrypt moze byc wieloliniowy. True, gdy DLL odebral."""
+    return _send_raw(text.encode("utf-8", "replace") + b"\x00")
+
+
 class PipeDrinker:
-    """Wysyla indeks slotu (0..8) jako 1 bajt do DLL. Otwiera-pisze-zamyka za kazdym razem:
-    picie jest rzadkie (cooldown), a tak nie blokujemy na stale jedynej instancji potoku
-    (dzieki czemu dll_loaded()/[J] zawsze maja sie do czego podlaczyc)."""
+    """Picie przez DLL: wysyla komende 'uzyj slotu paska'. Otwiera-pisze-zamyka za kazdym razem -
+    picie jest rzadkie (cooldown), a tak nie blokujemy jedynej instancji potoku."""
 
     def __init__(self):
         self.last_ok = False
 
     def drink(self, slot):
-        """Wyslij 'wypij slot'. True gdy bajt dotarl do DLL."""
-        h = _open_pipe()
-        if h is None:
-            self.last_ok = False
-            return False
-        n = wintypes.DWORD(0)
-        ok = bool(k32.WriteFile(h, bytes([slot & 0xFF]), 1, ctypes.byref(n), None)) and n.value == 1
-        k32.CloseHandle(h)
-        self.last_ok = ok
-        return ok
+        """Wyslij 'wypij slot N paska' (0..8). True gdy komenda dotarla do DLL."""
+        self.last_ok = send_command(
+            "import player\nplayer.RequestUseLocalQuickSlot(%d)" % int(slot))
+        return self.last_ok
 
 
 def _project_paths():
@@ -238,3 +248,67 @@ def ensure_injected(pid, timeout=10.0):
         time.sleep(0.1)
     msg = (r.stdout or r.stderr or "").strip().splitlines()
     return False, (msg[-1] if msg else "DLL nie zglosil sie na potoku")
+
+
+# ---------------------------------------------------------------------------
+# Zrzut ekwipunku: DLL wykonuje w grze snippet czytajacy ekwipunek (player.GetItemIndex/Count,
+# nazwy z item.GetItemName) i zapisuje do pliku; radar potem go czyta. Nazwy sa w cp1250 (pl).
+# ---------------------------------------------------------------------------
+INV_DUMP_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "logs", "inventory.txt")
+
+# Snippet biegnie w Pythonie 2.7 GRY. __PATH__ podmieniamy na sciezke pliku wyniku.
+# Rozmiar ekwipunku liczymy z odslonietych stalych (player.INVENTORY_PAGE_SIZE/COUNT) - odporne
+# na uklad tego klienta. '__PATH__' jest w r"..." (surowy), wiec pojedyncze '\' sa literalne.
+_DUMP_TEMPLATE = r'''import player
+try:
+    import item
+except Exception:
+    item = None
+f = open(r"__PATH__", "w")
+try:
+    N = player.INVENTORY_PAGE_SIZE * player.INVENTORY_PAGE_COUNT
+    for s in range(N):
+        vn = player.GetItemIndex(s)
+        if vn:
+            cnt = player.GetItemCount(s)
+            nm = ""
+            if item is not None:
+                try:
+                    item.SelectItem(vn)
+                    nm = item.GetItemName()
+                except Exception:
+                    nm = ""
+            f.write("%d\t%d\t%d\t%s\n" % (s, vn, cnt, nm))
+finally:
+    f.close()
+'''
+
+
+def dump_inventory(timeout=3.0):
+    """Zleca grze zrzut ekwipunku i zwraca liste krotek (slot, vnum, count, name).
+    None = DLL nie odebral komendy (niewstrzykniety?). [] = puste / brak postaci."""
+    try:
+        if os.path.exists(INV_DUMP_PATH):
+            os.remove(INV_DUMP_PATH)
+    except OSError:
+        pass
+    snippet = _DUMP_TEMPLATE.replace("__PATH__", INV_DUMP_PATH)
+    if not send_command(snippet):
+        return None
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if os.path.exists(INV_DUMP_PATH):
+            time.sleep(0.15)                  # daj grze dopisac plik do konca
+            break
+        time.sleep(0.1)
+    if not os.path.exists(INV_DUMP_PATH):
+        return []
+    out = []
+    with open(INV_DUMP_PATH, "rb") as fh:
+        for ln in fh.read().splitlines():
+            parts = ln.split(b"\t")
+            if len(parts) >= 3 and parts[0].isdigit():
+                nm = parts[3].decode("cp1250", "replace") if len(parts) > 3 else ""
+                out.append((int(parts[0]), int(parts[1]), int(parts[2]), nm))
+    return out
