@@ -1,0 +1,12 @@
+23:46:08  ======================================================================
+23:46:08  [+] gracz=(31688,19042). Migawka 1. STOJ i KREC KAMERA przez 3.0s...
+23:46:11  [+] encji wspolnych: 190
+23:46:11  [+] Analiza offsetow 0x240..0x300 (szukamy: world-range, duzy std, MALO zmian po obrocie kamery):
+23:46:11      off=0x278  world_range=185/190  std=     412  zmienionych_po_obrocie=29
+23:46:11      off=0x27c  world_range=185/190  std=    4092  zmienionych_po_obrocie=30
+23:46:11      off=0x280  world_range=185/190  std=    4360  zmienionych_po_obrocie=31
+23:46:11      off=0x274  world_range=185/190  std=    4359  zmienionych_po_obrocie=31
+23:46:11      off=0x270  world_range=185/190  std=    3988  zmienionych_po_obrocie=31
+23:46:11      off=0x26c  world_range=189/190  std=     420  zmienionych_po_obrocie=35
+23:46:11      off=0x264  world_range=189/190  std=    4080  zmienionych_po_obrocie=38
+23:46:11      off=0x268  world_range=189/190  std=    4352  zmienionych_po_obrocie=39

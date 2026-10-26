@@ -1,0 +1,333 @@
+22:52:19  ======================================================================
+22:52:19  [+] baza modulu 0x210000 .. 0x71d000 | gracz X=38523.3 Y=19170.6
+22:52:19  [+] zapisywalnych regionow: 750
+22:52:20  [+] blokow pozycji (X+Y) na stercie: 17
+22:52:20  [+] TOP kandydaci (vtable, offset_X_w_obiekcie, ile_wystapien):
+22:52:20      vtable=0x637970  xoff=0xda4  yoff=0xdac  count=2
+22:52:20      vtable=0x637970  xoff=0xca8  yoff=0xcb0  count=2
+22:52:20      vtable=0x650064  xoff=0xe5c  yoff=0xe64  count=2
+22:52:20      vtable=0x210000  xoff=0xc24  yoff=0xc2c  count=1
+22:52:20      vtable=0x6726dc  xoff=0xbe8  yoff=0xbf0  count=1
+22:52:20      vtable=0x33ed02  xoff=0x9c0  yoff=0x9c8  count=1
+22:52:20      vtable=0x5dfa18  xoff=0x97c  yoff=0x984  count=1
+22:52:20      vtable=0x5dfa18  xoff=0x95c  yoff=0x964  count=1
+22:52:20  [=] WYBRANY: vtable=0x637970  xoff=0xda4  yoff=0xdac
+22:52:20  [+] ZNALEZIONE INSTANCJE: 3
+22:52:20      obj=0x1718844  X=    38523.3  Y=    19170.6  dist=      0.0
+22:52:20      obj=0x1718a48  X=    38523.3  Y=    19170.6  dist=      0.0
+22:52:20      obj=0x1718ae8  X=    38528.9  Y=    19125.0  dist=     46.0
+22:53:56  ======================================================================
+22:53:56  [+] baza modulu 0x210000 .. 0x71d000 | gracz X=38523.3 Y=19170.6
+22:53:56  [+] zapisywalnych regionow: 670
+22:53:56  [+] blokow pozycji (X,Y) w promieniu 8000: 53054
+22:54:11  [+] TOP kandydaci (vtable, offset_X_w_obiekcie, ile_wystapien):
+22:54:11      vtable=0x4dccff  xoff=0xc  yoff=0x14  count=1265
+22:54:11      vtable=0x4dccff  xoff=0x24  yoff=0x2c  count=1216
+22:54:11      vtable=0x4dccff  xoff=0x3c  yoff=0x44  count=1167
+22:54:11      vtable=0x4dccff  xoff=0x54  yoff=0x5c  count=1118
+22:54:11      vtable=0x4dccff  xoff=0x6c  yoff=0x74  count=1071
+22:54:11      vtable=0x4dccff  xoff=0x84  yoff=0x8c  count=1036
+22:54:11      vtable=0x4dccff  xoff=0x9c  yoff=0xa4  count=979
+22:54:11      vtable=0x4dccff  xoff=0xb4  yoff=0xbc  count=934
+22:54:11  [=] WYBRANY: vtable=0x4dccff  xoff=0xc  yoff=0x14
+22:54:11  [+] ZNALEZIONE INSTANCJE: 1247
+22:54:11      obj=0x1ff39c7c  X=    38720.9  Y=    18618.3  dist=    586.7
+22:54:11      obj=0x1ff39c94  X=    38721.6  Y=    18618.3  dist=    586.9
+22:54:11      obj=0x1ff39cac  X=    38722.4  Y=    18618.2  dist=    587.2
+22:54:11      obj=0xe2b810c  X=    38739.2  Y=    18612.4  dist=    598.6
+22:54:11      obj=0xe2b8124  X=    38738.6  Y=    18612.1  dist=    598.6
+22:54:11      obj=0xe2b813c  X=    38737.9  Y=    18611.8  dist=    598.6
+22:54:11      obj=0x6406c4c  X=    38711.0  Y=    18576.4  dist=    623.1
+22:54:11      obj=0x6406c64  X=    38709.3  Y=    18574.0  dist=    625.0
+22:54:11      obj=0x6406c7c  X=    38707.6  Y=    18571.5  dist=    626.8
+22:54:11      obj=0x6406c94  X=    38705.9  Y=    18569.1  dist=    628.6
+22:54:11      obj=0x6406cac  X=    38704.3  Y=    18566.7  dist=    630.5
+22:54:11      obj=0x6406cc4  X=    38702.8  Y=    18564.4  dist=    632.2
+22:54:11      obj=0x6406cdc  X=    38701.5  Y=    18562.3  dist=    633.9
+22:54:11      obj=0x6406cf4  X=    38700.5  Y=    18560.4  dist=    635.5
+22:54:11      obj=0x6406d0c  X=    38699.9  Y=    18558.7  dist=    636.9
+22:54:11      obj=0x6406d24  X=    38699.6  Y=    18557.3  dist=    638.2
+22:54:11      obj=0x6406d3c  X=    38699.7  Y=    18556.1  dist=    639.4
+22:54:11      obj=0x6406d54  X=    38700.3  Y=    18555.1  dist=    640.5
+22:54:11      obj=0x6406d6c  X=    38701.2  Y=    18554.3  dist=    641.5
+22:54:11      obj=0x6406d84  X=    38702.5  Y=    18553.6  dist=    642.6
+22:54:11      obj=0x6406d9c  X=    38704.2  Y=    18553.0  dist=    643.6
+22:54:11      obj=0x6406db4  X=    38706.2  Y=    18552.6  dist=    644.6
+22:54:11      obj=0x6406dcc  X=    38708.4  Y=    18552.3  dist=    645.5
+22:54:11      obj=0x6406de4  X=    38710.7  Y=    18552.1  dist=    646.3
+22:54:11      obj=0x6406dfc  X=    38712.8  Y=    18552.0  dist=    647.0
+22:54:11      obj=0x6406e14  X=    38714.8  Y=    18552.1  dist=    647.5
+22:54:11      obj=0x6406e2c  X=    38716.5  Y=    18552.3  dist=    647.8
+22:54:11      obj=0x6406eec  X=    38726.3  Y=    18555.4  dist=    647.9
+22:54:11      obj=0x6406ed4  X=    38725.2  Y=    18555.0  dist=    647.9
+22:54:11      obj=0x6406ebc  X=    38724.1  Y=    18554.6  dist=    648.0
+22:54:11      obj=0x6406e44  X=    38718.0  Y=    18552.6  dist=    648.0
+22:54:11      obj=0x6406ea4  X=    38723.0  Y=    18554.2  dist=    648.0
+22:54:11      obj=0x6406e8c  X=    38721.8  Y=    18553.8  dist=    648.1
+22:54:11      obj=0x6406e5c  X=    38719.4  Y=    18552.9  dist=    648.1
+22:54:11      obj=0x6406e74  X=    38720.7  Y=    18553.3  dist=    648.1
+22:54:11      obj=0x202e6d6c  X=    39932.4  Y=    18647.2  dist=   1503.2
+22:54:11      obj=0x202e6d84  X=    39933.5  Y=    18645.5  dist=   1504.9
+22:54:11      obj=0x202e6d54  X=    39962.6  Y=    18606.4  dist=   1545.9
+22:54:11      obj=0x202e6d24  X=    39966.6  Y=    18600.4  dist=   1551.9
+22:54:11      obj=0x202e6d3c  X=    39967.8  Y=    18598.8  dist=   1553.5
+22:54:11      obj=0x1ff39cc4  X=    40548.6  Y=    18641.2  dist=   2093.4
+22:54:11      obj=0x1ff39cf4  X=    40549.4  Y=    18641.2  dist=   2094.1
+22:54:11      obj=0x1fbe1f04  X=    40600.0  Y=    18660.2  dist=   2138.5
+22:54:11      obj=0x1fbe1f1c  X=    40602.4  Y=    18660.5  dist=   2140.8
+22:54:11      obj=0x1fbe1f34  X=    40604.6  Y=    18660.6  dist=   2142.9
+22:54:11      obj=0x1fbe1f4c  X=    40606.6  Y=    18660.4  dist=   2144.8
+22:54:11      obj=0x1fbe1f64  X=    40608.1  Y=    18659.9  dist=   2146.5
+22:54:11      obj=0x1fbe1f7c  X=    40609.2  Y=    18659.0  dist=   2147.7
+22:54:11      obj=0x1fbe1f94  X=    40609.7  Y=    18657.5  dist=   2148.6
+22:54:11      obj=0x1fbe1fac  X=    40609.8  Y=    18655.8  dist=   2149.1
+22:54:11      obj=0x1fbe1fc4  X=    40609.6  Y=    18653.7  dist=   2149.4
+22:54:11      obj=0x1fbe1fdc  X=    40609.1  Y=    18651.5  dist=   2149.5
+22:54:11      obj=0x1fbe1ff4  X=    40608.6  Y=    18649.3  dist=   2149.5
+22:54:11      obj=0x1fbe200c  X=    40608.1  Y=    18647.2  dist=   2149.5
+22:54:11      obj=0x1fbe2024  X=    40607.6  Y=    18645.2  dist=   2149.5
+22:54:11      obj=0x1fbe203c  X=    40607.1  Y=    18643.1  dist=   2149.6
+22:54:11      obj=0x1fbe2054  X=    40606.7  Y=    18641.0  dist=   2149.7
+22:54:11      obj=0x1fbe206c  X=    40606.3  Y=    18638.8  dist=   2149.9
+22:54:11      obj=0x1fbe2084  X=    40606.0  Y=    18636.3  dist=   2150.1
+22:54:11      obj=0x1fbe209c  X=    40605.7  Y=    18633.6  dist=   2150.5
+22:54:11      ... (jeszcze 1187)
+22:59:25  ======================================================================
+22:59:25  [+] baza modulu 0x210000 .. 0x71d000 | gracz X=38523.3 Y=19170.6
+22:59:25  [+] zapisywalnych regionow: 676
+22:59:25  [+] blokow pozycji (X,Y) w promieniu 8000: 62206
+22:59:54  [+] TOP kandydaci (vtable, xoff, count, czy_prawdziwa_vtable):
+22:59:54      vtable=0x4dccff  xoff=0xc  yoff=0x14  count=1159  vtable_ok=False
+22:59:54      vtable=0x4dccff  xoff=0x24  yoff=0x2c  count=1114  vtable_ok=False
+22:59:54      vtable=0x4dccff  xoff=0x3c  yoff=0x44  count=1070  vtable_ok=False
+22:59:54      vtable=0x4dccff  xoff=0x54  yoff=0x5c  count=1026  vtable_ok=False
+22:59:54      vtable=0x4dccff  xoff=0x6c  yoff=0x74  count=984  vtable_ok=False
+22:59:54      vtable=0x4dccff  xoff=0x84  yoff=0x8c  count=955  vtable_ok=False
+22:59:54      vtable=0x4dccff  xoff=0x9c  yoff=0xa4  count=902  vtable_ok=False
+22:59:54      vtable=0x4dccff  xoff=0xb4  yoff=0xbc  count=861  vtable_ok=False
+22:59:54      vtable=0x4dccff  xoff=0xcc  yoff=0xd4  count=821  vtable_ok=False
+22:59:54      vtable=0x4dccff  xoff=0xe4  yoff=0xec  count=782  vtable_ok=False
+22:59:54      vtable=0x4dccff  xoff=0xfc  yoff=0x104  count=743  vtable_ok=False
+22:59:54      vtable=0x5ea0fc  xoff=0x2fd4  yoff=0x2fdc  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2f84  yoff=0x2f8c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2f34  yoff=0x2f3c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2ee4  yoff=0x2eec  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2e94  yoff=0x2e9c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2e44  yoff=0x2e4c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2df4  yoff=0x2dfc  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2da4  yoff=0x2dac  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2d54  yoff=0x2d5c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2d04  yoff=0x2d0c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2cb4  yoff=0x2cbc  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2c64  yoff=0x2c6c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2c14  yoff=0x2c1c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2bc4  yoff=0x2bcc  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2b74  yoff=0x2b7c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2b24  yoff=0x2b2c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2ad4  yoff=0x2adc  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2a84  yoff=0x2a8c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2a34  yoff=0x2a3c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x29e4  yoff=0x29ec  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2994  yoff=0x299c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2944  yoff=0x294c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x28f4  yoff=0x28fc  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x28a4  yoff=0x28ac  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2854  yoff=0x285c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2804  yoff=0x280c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x27b4  yoff=0x27bc  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2764  yoff=0x276c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2714  yoff=0x271c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x26c4  yoff=0x26cc  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2674  yoff=0x267c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2624  yoff=0x262c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x25d4  yoff=0x25dc  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2584  yoff=0x258c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2534  yoff=0x253c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x24e4  yoff=0x24ec  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2494  yoff=0x249c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2444  yoff=0x244c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x23f4  yoff=0x23fc  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x23a4  yoff=0x23ac  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2354  yoff=0x235c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2304  yoff=0x230c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x22b4  yoff=0x22bc  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2264  yoff=0x226c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2214  yoff=0x221c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x21c4  yoff=0x21cc  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2174  yoff=0x217c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x2124  yoff=0x212c  count=738  vtable_ok=True
+22:59:54      vtable=0x5ea0fc  xoff=0x20d4  yoff=0x20dc  count=738  vtable_ok=True
+22:59:54  [=] WYBRANY (pierwszy z poprawna vtable): vtable=0x5ea0fc  xoff=0x2fd4  yoff=0x2fdc  count=738
+22:59:54  [+] ZNALEZIONE INSTANCJE: 1489
+22:59:54      obj=0x4c367d4  X=    38681.4  Y=    18647.7  dist=    546.3
+22:59:54      obj=0x4c32184  X=    38690.7  Y=    18636.3  dist=    559.9
+22:59:54      obj=0x4c1ba74  X=    39042.3  Y=    18826.4  dist=    622.8
+22:59:54      obj=0x4c27b94  X=    39042.3  Y=    18826.4  dist=    622.8
+22:59:54      obj=0x4c27be4  X=    39042.3  Y=    18826.4  dist=    622.8
+22:59:54      obj=0x4c35f14  X=    38432.3  Y=    18547.0  dist=    630.2
+22:59:54      obj=0x4c33084  X=    38313.5  Y=    18537.4  dist=    667.1
+22:59:54      obj=0x4c336c4  X=    38774.7  Y=    18543.7  dist=    675.5
+22:59:54      obj=0x4c35f64  X=    38886.3  Y=    18544.6  dist=    723.6
+22:59:54      obj=0x4c33c64  X=    38155.4  Y=    18536.5  dist=    733.1
+22:59:54      obj=0x4c207f4  X=    38312.2  Y=    18442.6  dist=    758.0
+22:59:54      obj=0x4c2b474  X=    38312.2  Y=    18442.6  dist=    758.0
+22:59:54      obj=0x4c2b4c4  X=    38312.2  Y=    18442.6  dist=    758.0
+22:59:54      obj=0x4c30d34  X=    38312.2  Y=    18442.6  dist=    758.0
+22:59:54      obj=0x4c208e4  X=    38971.4  Y=    18543.9  dist=    770.5
+22:59:54      obj=0x4c2b5b4  X=    38971.4  Y=    18543.9  dist=    770.5
+22:59:54      obj=0x4c2b604  X=    38971.4  Y=    18543.9  dist=    770.5
+22:59:54      obj=0x4c31c34  X=    39043.0  Y=    18540.5  dist=    816.8
+22:59:54      obj=0x4c31ff4  X=    39043.0  Y=    18540.5  dist=    816.8
+22:59:54      obj=0x4c322c4  X=    38360.6  Y=    18328.5  dist=    857.7
+22:59:54      obj=0x4c27374  X=    37850.0  Y=    18626.7  dist=    865.5
+22:59:54      obj=0x4c273c4  X=    37850.0  Y=    18626.7  dist=    865.5
+22:59:54      obj=0x4c333f4  X=    39214.0  Y=    18617.8  dist=    884.7
+22:59:54      obj=0x4c34204  X=    38530.0  Y=    18260.5  dist=    910.1
+22:59:54      obj=0x4c32134  X=    38835.3  Y=    18309.2  dist=    916.2
+22:59:54      obj=0x4c30424  X=    38468.7  Y=    18236.2  dist=    936.0
+22:59:54      obj=0x4c349d4  X=    38938.6  Y=    18277.0  dist=    985.5
+22:59:54      obj=0x4c36e64  X=    38938.6  Y=    18277.0  dist=    985.5
+22:59:54      obj=0x4c346b4  X=    38488.5  Y=    18162.3  dist=   1008.9
+22:59:54      obj=0x4c35c94  X=    38181.4  Y=    18212.4  dist=   1017.4
+22:59:54      obj=0x4c24e94  X=    39510.0  Y=    19452.5  dist=   1026.2
+22:59:54      obj=0x4c24ee4  X=    39510.0  Y=    19452.5  dist=   1026.2
+22:59:54      obj=0x4c33ee4  X=    39032.9  Y=    18263.9  dist=   1040.1
+22:59:54      obj=0x4c20114  X=    38428.8  Y=    18092.8  dist=   1082.0
+22:59:54      obj=0x4c2aa74  X=    38428.8  Y=    18092.8  dist=   1082.0
+22:59:54      obj=0x4c2aac4  X=    38428.8  Y=    18092.8  dist=   1082.0
+22:59:54      obj=0x4c24ad4  X=    39546.3  Y=    19545.7  dist=   1089.6
+22:59:54      obj=0x4c24b24  X=    39546.3  Y=    19545.7  dist=   1089.6
+22:59:54      obj=0x4c31e14  X=    38929.8  Y=    18142.5  dist=   1105.6
+22:59:54      obj=0x4c33994  X=    38929.8  Y=    18142.5  dist=   1105.6
+22:59:54      obj=0x4c314b4  X=    37898.5  Y=    18255.0  dist=   1108.4
+22:59:54      obj=0x4c34524  X=    39103.6  Y=    18156.8  dist=   1168.2
+22:59:54      obj=0x4c34ca4  X=    37988.0  Y=    18131.3  dist=   1169.1
+22:59:54      obj=0x4c33624  X=    37932.8  Y=    18127.2  dist=   1199.0
+22:59:54      obj=0x4c33b24  X=    37711.5  Y=    18287.7  dist=   1199.4
+22:59:54      obj=0x4c31504  X=    37902.5  Y=    18135.1  dist=   1207.4
+22:59:54      obj=0x4c22504  X=    38100.9  Y=    18035.8  dist=   1210.9
+22:59:54      obj=0x4c2d774  X=    38100.9  Y=    18035.8  dist=   1210.9
+22:59:54      obj=0x4c2d7c4  X=    38100.9  Y=    18035.8  dist=   1210.9
+22:59:54      obj=0x4c33f34  X=    37932.0  Y=    18087.8  dist=   1233.8
+22:59:54      obj=0x4c342a4  X=    39198.6  Y=    18129.3  dist=   1241.2
+22:59:54      obj=0x4c339e4  X=    37651.5  Y=    18280.7  dist=   1245.8
+22:59:54      obj=0x4c20ed4  X=    38600.0  Y=    17922.8  dist=   1250.2
+22:59:54      obj=0x4c30b54  X=    39230.7  Y=    18128.2  dist=   1259.8
+22:59:54      obj=0x4c331c4  X=    37914.9  Y=    18056.8  dist=   1269.1
+22:59:54      obj=0x4c351f4  X=    37835.1  Y=    18099.6  dist=   1273.1
+22:59:54      obj=0x4c35244  X=    37835.1  Y=    18099.6  dist=   1273.1
+22:59:54      obj=0x4c2b3d4  X=    38526.5  Y=    17878.3  dist=   1292.4
+22:59:54      obj=0x4c2b424  X=    38526.5  Y=    17878.3  dist=   1292.4
+22:59:54      obj=0x4c20a24  X=    38403.5  Y=    17882.8  dist=   1293.4
+22:59:54      ... (jeszcze 1429)
+23:13:18  ======================================================================
+23:13:18  [+] baza modulu 0x210000 .. 0x71d000 | gracz X=38561.5 Y=18970.0
+23:13:18  [+] zapisywalnych regionow: 711
+23:13:19  [+] blokow pozycji (X,Y) w promieniu 8000: 54717
+23:13:41  [+] Kandydatow-vtable (po filtrze is_vtable): 8
+23:13:41  [+] DIAGNOSTYKA kandydatow:
+23:13:41    --- vtable=0x5ea0fc xoff=0x2fd4 yoff=0x2fdc count_tally=727 n_offsetow=154 n_trafien=40000 median_gap=0x50
+23:13:41          obj=0x4c1b024  X=   28981.7 Y=   19349.7 dist=  9587.3
+23:13:41          obj=0x4c1b074  X=   48908.4 Y=   18121.9 dist= 10381.5
+23:13:41          obj=0x4c1b0c4  X=   29335.4 Y=   19234.7 dist=  9229.9
+23:13:41          obj=0x4c1b114  X=   30881.3 Y=   19415.8 dist=  7693.1
+23:13:41          obj=0x4c1b164  X=   28734.9 Y=   19414.8 dist=  9836.6
+23:13:41          obj=0x4c1b1b4  X=   30040.3 Y=   19393.8 dist=  8531.8
+23:13:41          obj=0x4c1b204  X=   28576.2 Y=   19408.3 dist=  9994.9
+23:13:41          obj=0x4c1b254  X=   28782.0 Y=   19351.0 dist=  9786.9
+23:13:41          obj=0x4c1b2a4  X=   28901.1 Y=   19351.0 dist=  9667.9
+23:13:41          obj=0x4c1b2f4  X=   31432.2 Y=   19501.2 dist=  7149.0
+23:13:41          obj=0x4c1b344  X=   29642.0 Y=   19354.2 dist=  8927.8
+23:13:41          obj=0x4c1b394  X=   29665.0 Y=   19410.2 dist=  8907.4
+23:13:41    --- vtable=0x5dfd28 xoff=0x4 yoff=0xc count_tally=310 n_offsetow=1548 n_trafien=817 median_gap=0x88
+23:13:41          obj=0x17090630  X=   30651.1 Y=   19411.7 dist=  7922.7
+23:13:41          obj=0x170907c8  X=   41479.5 Y=   19141.8 dist=  2923.0
+23:13:41          obj=0x170908d8  X=   30324.9 Y=   19410.2 dist=  8248.4
+23:13:41          obj=0x17090af8  X=   29264.2 Y=   19417.3 dist=  9308.0
+23:13:41          obj=0x17090d18  X=   42400.1 Y=   19141.8 dist=  3842.5
+23:13:41          obj=0x17090e28  X=   29951.0 Y=   19410.2 dist=  8621.7
+23:13:41          obj=0x17090eb0  X=   41670.1 Y=   19141.8 dist=  3113.3
+23:13:41          obj=0x17090f38  X=   41531.5 Y=   19141.8 dist=  2975.0
+23:13:41          obj=0x17090fc0  X=   42589.7 Y=   19141.8 dist=  4031.8
+23:13:41          obj=0x170911e0  X=   41722.2 Y=   19141.8 dist=  3165.4
+23:13:41          obj=0x17091268  X=   30946.6 Y=   19408.7 dist=  7627.5
+23:13:41          obj=0x170912f0  X=   29574.9 Y=   19410.2 dist=  8997.3
+23:13:41    --- vtable=0x5e5b30 xoff=0x258 yoff=0x25c count_tally=197 n_offsetow=265 n_trafien=450 median_gap=0x778
+23:13:41          obj=0x149d75d4  X=   40550.6 Y=   17995.5 dist=  2215.0
+23:13:41          obj=0x149d75ec  X=   40845.5 Y=   17995.5 dist=  2483.2
+23:13:41          obj=0x19f6219c  X=   32250.0 Y=   18514.1 dist=  6327.9
+23:13:41          obj=0x19f62964  X=   37676.0 Y=   18146.1 dist=  1209.5
+23:13:41          obj=0x19f6312c  X=   33526.0 Y=   18488.2 dist=  5058.5
+23:13:41          obj=0x19f638f4  X=   47576.0 Y=   17911.7 dist=  9076.4
+23:13:41          obj=0x1f19187c  X=   36745.0 Y=   18081.8 dist=  2022.0
+23:13:41          obj=0x1fb27a6c  X=   44367.0 Y=   17561.8 dist=  5973.8
+23:13:41          obj=0x1fbe146c  X=   37575.0 Y=   18151.2 dist=  1282.1
+23:13:41          obj=0x1fbe1bfc  X=   35736.0 Y=   18262.4 dist=  2912.8
+23:13:41          obj=0x1fc60724  X=   39228.0 Y=   18098.5 dist=  1097.1
+23:13:41          obj=0x1fc63754  X=   35491.0 Y=   18281.7 dist=  3146.7
+23:13:41    --- vtable=0x5e4fb0 xoff=0x510 yoff=0x514 count_tally=196 n_offsetow=180 n_trafien=224 median_gap=0x7c8
+23:13:41          obj=0x149d731c  X=   40550.6 Y=   17995.5 dist=  2215.0
+23:13:41          obj=0x19f61ee4  X=   32250.0 Y=   18514.1 dist=  6327.9
+23:13:41          obj=0x19f626ac  X=   37676.0 Y=   18146.1 dist=  1209.5
+23:13:41          obj=0x19f62e74  X=   33526.0 Y=   18488.2 dist=  5058.5
+23:13:41          obj=0x19f6363c  X=   47576.0 Y=   17911.7 dist=  9076.4
+23:13:41          obj=0x1f1915c4  X=   36745.0 Y=   18081.8 dist=  2022.0
+23:13:41          obj=0x1fb277b4  X=   44367.0 Y=   17561.8 dist=  5973.8
+23:13:41          obj=0x1fbe11b4  X=   37575.0 Y=   18151.2 dist=  1282.1
+23:13:41          obj=0x1fbe1944  X=   35736.0 Y=   18262.4 dist=  2912.8
+23:13:41          obj=0x1fc6046c  X=   39228.0 Y=   18098.5 dist=  1097.1
+23:13:41          obj=0x1fc6349c  X=   35491.0 Y=   18281.7 dist=  3146.7
+23:13:41          obj=0x1fc664cc  X=   36831.0 Y=   18241.0 dist=  1877.8
+23:13:41    --- vtable=0x5e5000 xoff=0x268 yoff=0x26c count_tally=196 n_offsetow=175 n_trafien=224 median_gap=0x7c8
+23:13:41          obj=0x149d75c4  X=   40550.6 Y=   17995.5 dist=  2215.0
+23:13:41          obj=0x19f6218c  X=   32250.0 Y=   18514.1 dist=  6327.9
+23:13:41          obj=0x19f62954  X=   37676.0 Y=   18146.1 dist=  1209.5
+23:13:41          obj=0x19f6311c  X=   33526.0 Y=   18488.2 dist=  5058.5
+23:13:41          obj=0x19f638e4  X=   47576.0 Y=   17911.7 dist=  9076.4
+23:13:41          obj=0x1f19186c  X=   36745.0 Y=   18081.8 dist=  2022.0
+23:13:41          obj=0x1fb27a5c  X=   44367.0 Y=   17561.8 dist=  5973.8
+23:13:41          obj=0x1fbe145c  X=   37575.0 Y=   18151.2 dist=  1282.1
+23:13:41          obj=0x1fbe1bec  X=   35736.0 Y=   18262.4 dist=  2912.8
+23:13:41          obj=0x1fc60714  X=   39228.0 Y=   18098.5 dist=  1097.1
+23:13:41          obj=0x1fc63744  X=   35491.0 Y=   18281.7 dist=  3146.7
+23:13:41          obj=0x1fc66774  X=   36831.0 Y=   18241.0 dist=  1877.8
+23:13:41    --- vtable=0x5dfbf4 xoff=0x50 yoff=0x58 count_tally=167 n_offsetow=1488 n_trafien=2517 median_gap=0x48
+23:13:41          obj=0x162cf60c  X=    6400.0 Y=    3200.0 dist= 35819.8
+23:13:41          obj=0x162cf67c  X=    9600.0 Y=    3200.0 dist= 32976.7
+23:13:41          obj=0x162cf6ec  X=   12800.0 Y=    3200.0 dist= 30205.1
+23:13:41          obj=0x162cf75c  X=   16000.0 Y=    3200.0 dist= 27526.6
+23:13:41          obj=0x162cf7cc  X=   19200.0 Y=    3200.0 dist= 24971.2
+23:13:41          obj=0x162cf83c  X=   22400.0 Y=    3200.0 dist= 22580.7
+23:13:41          obj=0x162cf8ac  X=   25600.0 Y=    3200.0 dist= 20413.1
+23:13:41          obj=0x162cf91c  X=    3200.0 Y=    6400.0 dist= 37529.2
+23:13:41          obj=0x162cf98c  X=    6400.0 Y=    6400.0 dist= 34530.7
+23:13:41          obj=0x162cf9fc  X=    9600.0 Y=    6400.0 dist= 31571.7
+23:13:41          obj=0x162cfa6c  X=   12800.0 Y=    6400.0 dist= 28664.6
+23:13:41          obj=0x162cfadc  X=   16000.0 Y=    6400.0 dist= 25826.9
+23:13:41    --- vtable=0x5e7984 xoff=0x23b8 yoff=0x23c0 count_tally=155 n_offsetow=763 n_trafien=599 median_gap=0x30
+23:13:41          obj=0x166d8948  X=   41000.0 Y=   16951.5 dist=  3165.5
+23:13:41          obj=0x166d8978  X=   41200.0 Y=   16951.5 dist=  3322.1
+23:13:41          obj=0x166d89a8  X=   41200.0 Y=   16951.5 dist=  3322.1
+23:13:41          obj=0x166d89d8  X=   41400.0 Y=   16951.5 dist=  3483.0
+23:13:41          obj=0x166d8a08  X=   41400.0 Y=   16951.5 dist=  3483.0
+23:13:41          obj=0x166d8a38  X=   41600.0 Y=   16951.5 dist=  3647.9
+23:13:41          obj=0x180b8628  X=   38400.0 Y=   16951.5 dist=  2025.0
+23:13:41          obj=0x180b8658  X=   38400.0 Y=   16951.5 dist=  2025.0
+23:13:41          obj=0x180b86e8  X=   35600.0 Y=   16951.5 dist=  3584.0
+23:13:41          obj=0x180b8718  X=   35600.0 Y=   16951.5 dist=  3584.0
+23:13:41          obj=0x180b8748  X=   36600.0 Y=   16951.5 dist=  2814.6
+23:13:41          obj=0x180b8778  X=   36600.0 Y=   16951.5 dist=  2814.6
+23:13:41    --- vtable=0x5dfda4 xoff=0x3c yoff=0x44 count_tally=136 n_offsetow=1142 n_trafien=427 median_gap=0xd0
+23:13:41          obj=0x164f8200  X=   13747.9 Y=   20426.0 dist= 24856.3
+23:13:41          obj=0x16a24580  X=   30822.5 Y=   19303.5 dist=  7746.2
+23:13:41          obj=0x16a24b30  X=   29110.6 Y=   19309.1 dist=  9457.0
+23:13:41          obj=0x16a270f8  X=   13558.7 Y=   20501.0 dist= 25049.6
+23:13:41          obj=0x170e99d8  X=   72022.9 Y=   14197.4 dist= 33800.1
+23:13:41          obj=0x170e9aa8  X=   72594.2 Y=   14128.0 dist= 34375.4
+23:13:41          obj=0x170ea400  X=   72096.4 Y=   14281.6 dist= 33861.1
+23:13:41          obj=0x170eb5e0  X=   73120.7 Y=   14167.0 dist= 34891.3
+23:13:41          obj=0x170ee2f8  X=   30466.2 Y=   19303.5 dist=  8102.2
+23:13:41          obj=0x170ee5d0  X=   42037.6 Y=   18569.8 dist=  3499.1
+23:13:41          obj=0x170ee638  X=   29949.7 Y=   19303.5 dist=  8618.3
+23:13:41          obj=0x170ee6a0  X=   29428.6 Y=   19303.5 dist=  9139.0
+23:13:41  [i] Szukamy kandydata: MALO roznych offsetow (1-3), DUZY median_gap, rozne pozycje wokol gracza.

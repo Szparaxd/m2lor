@@ -1,0 +1,27 @@
+# Wlasna lista potworow wyroznianych na radarze (radar_map.py czyta ja na biezaco - edytuj
+# w trakcie dzialania radaru, zmiana widoczna po kolejnym skanie, ~1.5 s).
+#
+# Format:  vnum  kategoria  # komentarz
+#   boss    - duze kolo z nazwa zawsze widoczna (fiolet)
+#   special - mietowe kolo, nazwa po [N]
+#   normal  - zwykly mob (np. zeby wylaczyc automatycznego bossa rangi 4/5)
+# Bossy rangi 4/5 z mob_proto (BOSS/KING) sa oznaczane automatycznie (pomarancz).
+# vnum widac na radarze obok nazwy po wcisnieciu [N]; nazwy: Dump_Proto/mob_names.txt.
+
+# --- mini-bossy ---
+191 boss     # Lykos
+192 boss     # Scrofa
+193 boss     # Bera
+194 boss     # Tigris
+491 boss     # Mahon
+492 boss     # Bo
+493 boss     # Goo-Pae
+494 boss     # Chuong
+
+# --- potwory specjalne ---
+532 special  # Best. Maniak
+151 special  # Cung-Mok
+155 special  # Li-An*
+182 special  # Głodny Czar. Niedźw.
+154 special  # Young-Ji
+534 special  # Best. Specjalista*

@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+
+# Zbudowane artefakty C++ (odtwarzalne: build.bat)
+dll/*.dll
+dll/*.obj
+dll/*.exp
+dll/*.lib
+injector/*.exe
+injector/*.obj
+
+# Robocze zrzuty
+logs/inventory.txt

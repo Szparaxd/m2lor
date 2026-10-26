@@ -1,0 +1,17 @@
+23:24:14  ============================================================
+23:24:14  [+] baza=0x210000 vtable=0x5e5000 gracz X=38562 Y=18970
+23:24:14  [+] encji do analizy: 207
+23:24:14  [+] KANDYDACI na pole TYPU/RASY (malo roznych wartosci):
+23:24:14      off=0x8  roznych=2   0:206  2:1
+23:24:14      off=0x24  roznych=2   0:206  2:1
+23:24:14      off=0x5c  roznych=2   8:195  0:12
+23:24:14      off=0x1a4  roznych=2   0:206  1:1
+23:24:14      off=0x220  roznych=2   0:206  1:1
+23:24:14      off=0x23c  roznych=2   0:206  10:1
+23:24:14      off=0x254  roznych=2   0:204  1:3
+23:24:14      off=0x2cc  roznych=2   0:206  1:1
+23:24:14      off=0x154  roznych=3   0:204  2:2  6:1
+23:24:14      off=0x74  roznych=13   80:50  110:49  140:45  160:21  220:11  300:8  119:7  36:6
+23:24:14      off=0x158  roznych=18   171:48  101:34  102:28  104:27  174:12  173:9  108:9  177:7
+23:24:14  [+] KANDYDACI na VID (prawie kazda encja inna wartosc):
+23:24:14      off=0x2b0  roznych=207/207  min=9790 max=22440

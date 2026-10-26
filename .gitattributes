@@ -1,0 +1,6 @@
+# Normalizacja koncow linii: tekst = LF w repo, binaria bez zmian.
+* text=auto eol=lf
+*.png binary
+*.dds binary
+*.rar binary
+*.bat text eol=crlf

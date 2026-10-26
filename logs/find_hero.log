@@ -1,0 +1,23 @@
+00:01:22  ======================================================================
+00:01:22  [+] GRACZ global X=29441.7 Y=18973.3. Szukam obiektow na tej pozycji...
+00:01:23  [+] obiektow na pozycji gracza: 19
+00:01:23      obj=0x6a2db0 vtable=0x4cbebc20 (NIE-modul)  0x264=29441.7 0x268=-43258.0 0x26c=18973.3
+00:01:23      obj=0x6d482c vtable=0x0 (NIE-modul)  0x264=29441.7 0x268=-43258.0 0x26c=18973.3
+00:01:23      obj=0x6d49cc vtable=0x0 (NIE-modul)  0x264=29441.7 0x268=-43258.0 0x26c=18973.3
+00:01:23      obj=0x6de9a0 vtable=0x0 (NIE-modul)  0x264=29441.7 0x268=-43258.0 0x26c=18973.3
+00:01:23      obj=0x1719384 vtable=0x621756a4 (NIE-modul)  0x264=29441.7 0x268=-43258.0 0x26c=18973.3
+00:01:23      obj=0x1719430 vtable=0x60c (NIE-modul)  0x264=29441.7 0x268=-43258.0 0x26c=18973.3
+00:01:23      obj=0x171948c vtable=0x0 (NIE-modul)  0x264=29441.7 0x268=-43258.0 0x26c=18973.3
+00:01:23      obj=0x17194b4 vtable=0x0 (NIE-modul)  0x264=29441.7 0x268=-43258.0 0x26c=18973.3
+00:01:23      obj=0x17194c0 vtable=0x62171c14 (NIE-modul)  0x264=29435.7 0x268=-43060.9 0x26c=18940.0
+00:01:23      obj=0x17194dc vtable=0x8c003849 (NIE-modul)  0x264=29441.7 0x268=-43258.0 0x26c=18973.3
+00:01:23      obj=0x17194e8 vtable=0x10093 (NIE-modul)  0x264=29443.2 0x268=-43307.3 0x26c=18981.6
+00:01:23      obj=0x1719504 vtable=0x1719460 (NIE-modul)  0x264=29441.7 0x268=-43258.0 0x26c=18973.3
+00:01:23      obj=0x171952c vtable=0x17349a8 (NIE-modul)  0x264=29441.7 0x268=-43258.0 0x26c=18973.3
+00:01:23      obj=0x1719588 vtable=0x6f646e69 (NIE-modul)  0x264=29441.7 0x268=-43258.0 0x26c=18973.3
+00:01:23      obj=0x66435fc vtable=0x4fe40000 (NIE-modul)  0x264=29441.7 0x268=-43258.0 0x26c=18973.3
+00:01:23      obj=0x676988c vtable=0x0 (NIE-modul)  0x264=29441.7 0x268=-43258.0 0x26c=18973.3
+00:01:23      obj=0x2373de58 vtable=0x3ee71a78 (NIE-modul)  0x264=29441.7 0x268=-43258.0 0x26c=18973.3
+00:01:23      obj=0x2373dea8 vtable=0x0 (NIE-modul)  0x264=29441.7 0x268=-43258.0 0x26c=18973.3
+00:01:23      obj=0x2373e16c vtable=0x74 (NIE-modul)  0x264=29441.7 0x268=-43258.0 0x26c=18973.3
+00:01:23  [i] Hero = ten z vtable w module. Jego 0x268 to prawdziwe world-Y gracza (porownaj z 0x268 mobow, by wybrac plaszczyzne).

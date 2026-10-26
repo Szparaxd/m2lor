@@ -1,0 +1,64 @@
+00:10:21  ======================================================================
+00:10:21  [+] sledze moba vid=10807 obj=0x27fe9e84 dist=636. OBROC KAMERE o 180 st (postac STOI) przez 5.0s...
+00:10:27  [+] obj po obrocie: 0x27fe9e84. Offsety world-range i ich zmiana:
+00:10:27      off=0x78  przed=     1573.5  po=     1579.2  d=     5.7
+00:10:27      off=0x7c  przed=        0.0  po=     1580.5  d=  1580.5  <<< zmienilo sie (kamera?)
+00:10:27      off=0x1c0  przed=    27857.0  po=    27889.0  d=    32.0  <<< zmienilo sie (kamera?)
+00:10:27      off=0x1c4  przed=   -30055.7  po=   -29795.0  d=   260.7  <<< zmienilo sie (kamera?)
+00:10:27      off=0x1c8  przed=    19296.5  po=    19296.5  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:27      off=0x204  przed=        0.0  po=     1575.3  d=  1575.3  <<< zmienilo sie (kamera?)
+00:10:27      off=0x208  przed=        0.0  po=     1575.2  d=  1575.2  <<< zmienilo sie (kamera?)
+00:10:27      off=0x264  przed=    27857.0  po=    27889.0  d=    32.0  <<< zmienilo sie (kamera?)
+00:10:27      off=0x268  przed=    30055.7  po=    29795.0  d=   260.7  <<< zmienilo sie (kamera?)
+00:10:27      off=0x26c  przed=    19296.5  po=    19296.5  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:27      off=0x270  przed=    27804.0  po=    27804.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:27      off=0x274  przed=    30488.0  po=    30488.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:27      off=0x278  przed=    19282.9  po=    19282.9  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:27      off=0x27c  przed=    27889.0  po=    27889.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:27      off=0x280  przed=    29795.0  po=    29795.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:38  ======================================================================
+00:10:38  [+] sledze moba vid=10007 obj=0x19b0b4ac dist=247. OBROC KAMERE o 180 st (postac STOI) przez 5.0s...
+00:10:43  [+] obj po obrocie: 0x19b0b4ac. Offsety world-range i ich zmiana:
+00:10:43      off=0x78  przed=     1888.5  po=     1893.0  d=     4.5
+00:10:43      off=0x7c  przed=     1890.3  po=     1894.8  d=     4.5
+00:10:43      off=0x1c0  przed=    31994.0  po=    31994.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:43      off=0x1c4  przed=   -33239.0  po=   -33239.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:43      off=0x1c8  przed=    18773.9  po=    18773.9  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:43      off=0x204  przed=     1885.9  po=     1885.9  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:43      off=0x208  przed=     1885.8  po=     1885.8  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:43      off=0x264  przed=    31994.0  po=    31994.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:43      off=0x268  przed=    33239.0  po=    33239.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:43      off=0x26c  przed=    18773.9  po=    18773.9  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:43      off=0x270  przed=    32170.0  po=    32170.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:43      off=0x274  przed=    35238.0  po=    35238.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:43      off=0x278  przed=    18397.7  po=    18397.7  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:43      off=0x27c  przed=    31994.0  po=    31994.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+00:10:43      off=0x280  przed=    33239.0  po=    33239.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:06  ======================================================================
+07:10:06  [+] sledze moba vid=22440 obj=0x230185f4 dist=414. OBROC KAMERE o 180 st (postac STOI) przez 5.0s...
+07:10:11  [+] obj po obrocie: 0x230185f4. Offsety world-range i ich zmiana:
+07:10:11      off=0x1c0  przed=    30467.0  po=    30467.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:11      off=0x1c4  przed=   -32220.0  po=   -32220.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:11      off=0x1c8  przed=    19083.3  po=    19083.3  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:11      off=0x264  przed=    30467.0  po=    30467.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:11      off=0x268  przed=    32220.0  po=    32220.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:11      off=0x26c  przed=    19083.3  po=    19083.3  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:11      off=0x270  przed=    30007.0  po=    30007.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:11      off=0x274  przed=    32415.0  po=    32415.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:11      off=0x278  przed=    19065.4  po=    19065.4  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:11      off=0x27c  przed=    30467.0  po=    30467.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:11      off=0x280  przed=    32220.0  po=    32220.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:15  ======================================================================
+07:10:15  [+] sledze moba vid=22439 obj=0x23014f7c dist=413. OBROC KAMERE o 180 st (postac STOI) przez 5.0s...
+07:10:20  [+] obj po obrocie: 0x23014f7c. Offsety world-range i ich zmiana:
+07:10:20      off=0x1c0  przed=    30758.0  po=    30758.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:20      off=0x1c4  przed=   -33265.0  po=   -33265.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:20      off=0x1c8  przed=    18907.6  po=    18907.6  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:20      off=0x264  przed=    30758.0  po=    30758.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:20      off=0x268  przed=    33265.0  po=    33265.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:20      off=0x26c  przed=    18907.6  po=    18907.6  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:20      off=0x270  przed=    30717.0  po=    30717.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:20      off=0x274  przed=    32796.0  po=    32796.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:20      off=0x278  przed=    18984.0  po=    18984.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:20      off=0x27c  przed=    30758.0  po=    30758.0  d=     0.0  <-- NIEZMIENNE (swiat?)
+07:10:20      off=0x280  przed=    33265.0  po=    33265.0  d=     0.0  <-- NIEZMIENNE (swiat?)

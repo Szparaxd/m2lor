@@ -1,0 +1,5 @@
+23:37:48  ======================================================================
+23:37:48  [+] global1=(37634,18700) encji=160. Postac ma BIEC. Czekam 2.0s...
+23:37:51  [+] global2=(39189,18632) ruch gracza=(+1555,-68) |1556|
+23:37:51  [+] Encje z ruchem pasujacym do gracza (kandydat na encje gracza):
+23:37:51  [!] Nie znalazlem encji gracza. Mozliwe, ze gracz ma inna vtable (hero osobno).
