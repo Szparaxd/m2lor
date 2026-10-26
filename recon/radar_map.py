@@ -405,11 +405,15 @@ class RadarMap:
             ok, msg = False, str(e)
         print("[dll] %s" % msg)
         self.dll_exec = bool(ok) and autopot.dll_executes(self.pm.process_id)
-        print("[dll] wykonuje komendy: %s" % ("TAK (picie bez fokusu)" if self.dll_exec
-                                              else "NIE (picie klawiszem, z fokusem)"))
+        # hook per-klatka (vCore): picie bez fokusu natywnym wywolaniem, mimo ze pending-call nie dziala
+        self.native_drink = bool(ok) and autopot.hook_ready(self.pm.process_id)
+        print("[dll] exec=%s hook(natywne picie bez fokusu)=%s"
+              % (self.dll_exec, self.native_drink))
         if not ok:
             return "brak (%s)" % msg
-        return "wstrzyknieta, exec" if self.dll_exec else "wstrzyknieta, BEZ exec"
+        if self.dll_exec:
+            return "wstrzyknieta, exec"
+        return "wstrzyknieta, hook" if self.native_drink else "wstrzyknieta, BEZ exec"
 
     def _reload_moblist(self):
         """Wczytuje liste ponownie, gdy plik sie zmienil (edycja w trakcie dzialania radaru)."""
@@ -866,12 +870,15 @@ class RadarMap:
             return
         slot = int(POTION_KEY) - 1 if POTION_KEY.isdigit() else 0   # "1" -> indeks 0
         via = None
-        if self.dll_exec:                                  # DLL faktycznie wykonuje -> picie bez fokusu
+        if self.dll_exec:                                  # GameCoreTop: Python przez pending-call
             if self.pot_vnums:
                 if autopot.drink_by_vnum(self.pm.process_id, self.pot_vnums):   # skan EQ
                     via = "EQ"
             elif self.pipe.drink(slot):                    # slot paska przez DLL
                 via = "slot"
+        elif self.native_drink:                            # vCore: hook per-klatka, natywne, bez fokusu
+            if autopot.drink_native(self.pm.process_id, slot):
+                via = "hook"
         if via is None and self.hwnd and autopot.press_key(self.hwnd, POTION_KEY):  # zapas: fokus
             via = "klawisz"
         if via:
@@ -896,7 +903,7 @@ class RadarMap:
                       font=("Consolas", 8, "bold"))
         method = ("EQ vnum %s" % ",".join(map(str, self.pot_vnums))) if self.pot_vnums \
             else "slot %s" % POTION_KEY
-        mode = "bez fokusu" if self.dll_exec else "wymaga fokusu"
+        mode = "bez fokusu" if (self.dll_exec or self.native_drink) else "wymaga fokusu"
         state = ("WL  uzyto:%d" % self.pot_count) if self.autopot_on else "WYL"
         if self._healing:
             state += " [leje]"

@@ -424,6 +424,20 @@ def dll_executes(pid, timeout=2.0):
     return False
 
 
+def hook_ready(pid):
+    """True, gdy DLL zainstalowala hook per-klatka (picie bez fokusu natywnym wywolaniem) - marker
+    pliku pisany przez DLL dla vCore."""
+    mk = os.path.join(os.path.dirname(INV_DUMP_PATH), "hook_%d.ok" % pid)
+    return os.path.exists(mk)
+
+
+def drink_native(pid, slot):
+    """Picie BEZ fokusu przez hook (natywne RequestUseLocalQuickSlot na glownym watku). Wysyla
+    komende '!drink N' - DLL ustawia flage, hook wykonuje przy najblizszej klatce. slot = indeks
+    slotu paska (0..7)."""
+    return send_command(pid, "!drink %d" % int(slot))
+
+
 def dump_inventory(pid, timeout=3.0):
     """Zleca grze o danym PID zrzut ekwipunku i zwraca liste krotek (slot, vnum, count, name).
     None = DLL nie odebral komendy (niewstrzykniety?). [] = puste / brak postaci."""

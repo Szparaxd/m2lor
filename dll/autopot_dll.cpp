@@ -109,6 +109,100 @@ static bool resolve_python(void)
     return p_AddPendingCall && p_RunSimpleString;
 }
 
+// ======================= Focus-free drink na vCore (hook per-klatka) =======================
+// vCore NIE opruznia kolejki Py_AddPendingCall, a Python z obcego watku go wywala. Rozwiazanie:
+// detour na funkcji wywolywanej co klatke NA GLOWNYM WATKU (CPythonApplication::RunOneFrame),
+// i w hooku - juz na glownym watku - wolamy NATYWNIE CPythonPlayer::RequestUseLocalQuickSlot.
+// Bufor pakietow nie ma blokad, wiec wolno go ruszac TYLKO z glownego watku - stad hook, nie
+// nasz watek serwera. Radar ustawia flage przez komende potoku "!drink N".
+// RVA SPECYFICZNE DLA TEGO BUILDU vCore.exe (analiza binarki); prolog weryfikowany przed patchem.
+#define VCORE_HOOK_RVA             0xB3750
+#define VCORE_HOOK_RESUME_RVA      0xB3755
+#define VCORE_RULQS_RVA            0x80FA0        // RequestUseLocalQuickSlot (__thiscall, ret 4)
+#define VCORE_PLAYER_SINGLETON_RVA 0x1B8C664      // *(void**) = CPythonPlayer*
+static const unsigned char VCORE_PROLOGUE[5] = {0x56, 0x8B, 0xF1, 0x8B, 0xCE};
+
+typedef void(__thiscall *PFN_RULQS)(void *self, unsigned idx);
+
+static unsigned char *g_base = NULL;
+static volatile LONG g_want_drink = 0;
+static int g_slot = 0;
+static void *g_tramp = NULL;
+
+// Wywolywane CO KLATKE z glownego watku (z wnetrza hooka). Gdy radar poprosil - pijemy natywnie.
+static void on_frame(void)
+{
+    if (InterlockedExchange(&g_want_drink, 0)) {
+        void *self = *(void **)(g_base + VCORE_PLAYER_SINGLETON_RVA);
+        if (self)
+            ((PFN_RULQS)(g_base + VCORE_RULQS_RVA))(self, (unsigned)g_slot);
+    }
+}
+
+// Detour-stub: zachowuje rejestry, wola on_frame, odtwarza rejestry i skacze do trampoliny
+// (skradzione bajty + powrot do RunOneFrame+5).
+static __declspec(naked) void hook_stub(void)
+{
+    __asm {
+        pushad
+        pushfd
+        call on_frame
+        popfd
+        popad
+        jmp dword ptr [g_tramp]
+    }
+}
+
+static bool is_vcore(void)
+{
+    char path[MAX_PATH];
+    if (!GetModuleFileNameA(NULL, path, MAX_PATH))
+        return false;
+    char *b = strrchr(path, '\\');
+    b = b ? b + 1 : path;
+    return _stricmp(b, "vCore.exe") == 0;
+}
+
+static void install_vcore_hook(void)
+{
+    g_base = (unsigned char *)GetModuleHandleA(NULL);     // baza glownego exe (vCore.exe)
+    unsigned char *target = g_base + VCORE_HOOK_RVA;
+    if (memcmp(target, VCORE_PROLOGUE, 5) != 0) {
+        dbg("hook: prolog @0x%X nie pasuje (inny build vCore?) - rezygnuje", VCORE_HOOK_RVA);
+        return;
+    }
+    g_tramp = VirtualAlloc(NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!g_tramp) {
+        dbg("hook: VirtualAlloc trampoliny nieudany");
+        return;
+    }
+    unsigned char *t = (unsigned char *)g_tramp;
+    memcpy(t, target, 5);                                  // skradzione: 56 8B F1 8B CE
+    t[5] = 0x68;                                           // push imm32
+    *(DWORD *)(t + 6) = (DWORD)(g_base + VCORE_HOOK_RESUME_RVA);
+    t[10] = 0xC3;                                          // ret -> RunOneFrame+5
+
+    DWORD old;
+    if (!VirtualProtect(target, 5, PAGE_EXECUTE_READWRITE, &old)) {
+        dbg("hook: VirtualProtect nieudany");
+        return;
+    }
+    target[0] = 0xE9;                                      // jmp rel32 -> hook_stub
+    *(DWORD *)(target + 1) = (DWORD)((unsigned char *)hook_stub - (target + 5));
+    VirtualProtect(target, 5, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), target, 5);
+    dbg("hook: ZAINSTALOWANY na RunOneFrame (base+0x%X), tramp=%p", VCORE_HOOK_RVA, g_tramp);
+
+    char mk[160];
+    _snprintf(mk, sizeof(mk), "C:\\Metin\\radar-project\\logs\\hook_%lu.ok", GetCurrentProcessId());
+    FILE *f = fopen(mk, "w");
+    if (f) {
+        fputs("ok", f);
+        fclose(f);
+    }
+}
+// ===========================================================================================
+
 static DWORD WINAPI server_thread(LPVOID)
 {
     // Nazwa potoku i mutexu zawieraja PID tego procesu gry (per-instancja).
@@ -125,6 +219,9 @@ static DWORD WINAPI server_thread(LPVOID)
     }
 
     dbg("server start, pipe=%s", pipe_name);
+    // vCore: zainstaluj hook per-klatka (picie bez fokusu). Inne buildy: picie przez pending-call.
+    if (is_vcore())
+        install_vcore_hook();
     // python27.dll jest ladowany wczesnie, ale czekamy spokojnie az bedzie gotowy (max ~60 s).
     for (int i = 0; i < 600 && !resolve_python(); ++i)
         Sleep(100);
@@ -161,7 +258,16 @@ static DWORD WINAPI server_thread(LPVOID)
                     cmd[len] = 0;
                     if (len) {
                         dbg("komenda odebrana (len=%u): %.60s", (unsigned)len, cmd);
-                        queue_script(cmd);
+                        if (cmd[0] == '!') {
+                            // komendy natywne (nie-Python). "!drink N" = ustaw flage dla hooka.
+                            if (strncmp(cmd, "!drink", 6) == 0) {
+                                g_slot = atoi(cmd + 6);
+                                InterlockedExchange(&g_want_drink, 1);
+                                dbg("native drink: slot=%d (flaga dla hooka)", g_slot);
+                            }
+                        } else {
+                            queue_script(cmd);          // Python (dziala tam, gdzie petla opruznia kolejke)
+                        }
                     }
                     len = 0;
                 } else if (len < sizeof(cmd) - 1) {
