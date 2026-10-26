@@ -25,6 +25,27 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
+
+// Log diagnostyczny do pliku (poziom C) - zeby widziec, czy komenda dociera, czy pending-call sie
+// kolejkuje i czy callback sie odpala. Sciezka na sztywno (projekt lokalny).
+#define DBG_PATH "C:\\Metin\\radar-project\\logs\\dll_debug.txt"
+static void dbg(const char *fmt, ...)
+{
+    FILE *f = fopen(DBG_PATH, "a");
+    if (!f)
+        return;
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    fprintf(f, "[%02d:%02d:%02d.%03d pid=%lu] ", st.wHour, st.wMinute, st.wSecond,
+            st.wMilliseconds, GetCurrentProcessId());
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fputc('\n', f);
+    fclose(f);
+}
 
 // Pelna nazwa potoku = PIPE_PREFIX + PID procesu gry. PER-INSTANCJA: dwa klienty (GameCoreTop,
 // vCore) maja osobne potoki, wiec radar trafia zawsze do wlasciwej gry.
@@ -50,9 +71,11 @@ static int __cdecl pending_run(void *arg)
     char *script = (char *)arg;
     // Pending-call biegnie z GIL, ale Ensure/Release sa tu bezpieczne (rekurencyjne) i odporne
     // na ewentualne roznice wersji - wiec zostawiamy je obronnie.
+    dbg("pending_run ENTER (glowny watek): %.60s", script);
     int st = p_GILEnsure ? p_GILEnsure() : 0;
-    p_RunSimpleString(script);
+    int rc = p_RunSimpleString(script);
     if (p_GILRelease) p_GILRelease(st);
+    dbg("pending_run DONE rc=%d", rc);
     free(script);
     return 0;
 }
@@ -76,11 +99,15 @@ static void queue_script(const char *script)
         return;
     // Kolejka pending-calls bywa pelna (maly bufor) - ponawiamy chwile.
     for (int t = 0; t < 50; ++t) {
-        if (p_AddPendingCall(pending_run, copy) == 0)
+        int r = p_AddPendingCall(pending_run, copy);
+        if (r == 0) {
+            dbg("Py_AddPendingCall OK (zakolejkowane)");
             return;
+        }
         Sleep(2);
     }
     free(copy);
+    dbg("Py_AddPendingCall: kolejka pelna - komenda pominieta");
     log_dbg("[autopot] kolejka pending-calls pelna - komenda pominieta");
 }
 
@@ -99,13 +126,17 @@ static DWORD WINAPI server_thread(LPVOID)
         return 0;
     }
 
+    dbg("server start, pipe=%s", pipe_name);
     // python27.dll jest ladowany wczesnie, ale czekamy spokojnie az bedzie gotowy (max ~60 s).
     for (int i = 0; i < 600 && !resolve_python(); ++i)
         Sleep(100);
     if (!p_AddPendingCall) {
+        dbg("python27.dll / Py_AddPendingCall NIE znaleziony - koniec");
         log_dbg("[autopot] python27.dll / Py_AddPendingCall nie znaleziony - koniec");
         return 0;
     }
+    dbg("python OK: AddPendingCall=%p RunSimpleString=%p GILEnsure=%p",
+        (void *)p_AddPendingCall, (void *)p_RunSimpleString, (void *)p_GILEnsure);
     log_dbg("[autopot] gotowy, nasluchuje na potoku per-PID");
 
     for (;;) {
@@ -130,8 +161,10 @@ static DWORD WINAPI server_thread(LPVOID)
             while (ReadFile(pipe, &b, 1, &n, NULL) && n == 1) {
                 if (b == 0) {
                     cmd[len] = 0;
-                    if (len)
+                    if (len) {
+                        dbg("komenda odebrana (len=%u): %.60s", (unsigned)len, cmd);
                         queue_script(cmd);
+                    }
                     len = 0;
                 } else if (len < sizeof(cmd) - 1) {
                     cmd[len++] = (char)b;
