@@ -10,23 +10,59 @@ Uruchom (ADMIN, gra wlaczona, postac zalogowana):
     cd "C:/Metin/radar-project"; python recon/probe_player.py -e vCore
 """
 import argparse
+import ctypes
 import os
 import sys
 import time
+from ctypes import wintypes
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pymem
 
 import autopot
 
+
+def exe_dir(pm):
+    """Katalog pliku exe gry (do znalezienia syserr.txt)."""
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                             ctypes.POINTER(wintypes.DWORD)]
+    buf = ctypes.create_unicode_buffer(1024)
+    size = wintypes.DWORD(1024)
+    if k.QueryFullProcessImageNameW(pm.process_handle, 0, buf, ctypes.byref(size)):
+        return os.path.dirname(buf.value)
+    return None
+
+
+def tail_syserr(pm, n=25):
+    """Ostatnie linie syserr.txt klienta (tam gra wypisuje bledy Pythona)."""
+    d = exe_dir(pm)
+    if not d:
+        return
+    p = os.path.join(d, "syserr.txt")
+    try:
+        with open(p, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        print("[syserr] brak %s" % p)
+        return
+    print("\n--- syserr.txt (ostatnie %d linii) %s ---" % (n, p))
+    for ln in lines[-n:]:
+        print("  " + ln)
+
 OUT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                    "logs", "player_probe.txt")
 
-SNIPPET = r'''import player
-f = open(r"__PATH__", "w")
+# WAZNE: najpierw otwieramy plik (canary), potem probujemy player - zeby ZAWSZE dostac wynik,
+# nawet gdy import/GetStatus rzuci wyjatek (wtedy zapiszemy traceback).
+SNIPPET = r'''f = open(r"__PATH__", "w")
+f.write("canary: snippet wykonany\n")
+f.flush()
 try:
+    import player
+    f.write("player: zaimportowany\n")
     try:
-        f.write("MODULE dir: " + ",".join(sorted(dir(player))) + "\n")
+        f.write("dir: " + ",".join(sorted(dir(player))) + "\n")
     except Exception as e:
         f.write("dir ERR %s\n" % e)
     for n in sorted(dir(player)):
@@ -36,13 +72,18 @@ try:
                 f.write("CONST %s = %d\n" % (n, v))
         except Exception:
             pass
-    for i in range(0, 41):
-        try:
-            f.write("GetStatus[%d] = %r\n" % (i, player.GetStatus(i)))
-        except Exception as e:
-            f.write("GetStatus[%d] = ERR %s\n" % (i, e))
-finally:
-    f.close()
+    if hasattr(player, "GetStatus"):
+        for i in range(0, 41):
+            try:
+                f.write("GetStatus[%d] = %r\n" % (i, player.GetStatus(i)))
+            except Exception as e:
+                f.write("GetStatus[%d] = ERR %s\n" % (i, e))
+    else:
+        f.write("UWAGA: player nie ma GetStatus\n")
+except Exception:
+    import traceback
+    f.write("EXC:\n" + traceback.format_exc())
+f.close()
 '''
 
 
@@ -79,12 +120,15 @@ def main():
     while time.time() - t0 < 3.0 and not os.path.exists(OUT):
         time.sleep(0.1)
     if not os.path.exists(OUT):
-        print("[!] Brak wyniku - snippet sie nie wykonal (player niedostepny?).")
+        print("[!] Brak pliku wyniku - nawet canary nie powstal.")
+        print("    Mozliwe: DLL nie wykonuje komend tekstowych (stary protokol?) albo open() rzucil.")
+        tail_syserr(pm)
         return
     time.sleep(0.1)
     with open(OUT, encoding="utf-8", errors="replace") as f:
         print(f.read())
     print("[i] Plik: %s" % OUT)
+    tail_syserr(pm)
 
 
 if __name__ == "__main__":
