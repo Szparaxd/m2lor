@@ -116,11 +116,13 @@ static bool resolve_python(void)
 // Bufor pakietow nie ma blokad, wiec wolno go ruszac TYLKO z glownego watku - stad hook, nie
 // nasz watek serwera. Radar ustawia flage przez komende potoku "!drink N".
 // RVA SPECYFICZNE DLA TEGO BUILDU vCore.exe (analiza binarki); prolog weryfikowany przed patchem.
-#define VCORE_HOOK_RVA             0xB3750
-#define VCORE_HOOK_RESUME_RVA      0xB3755
+// Cel = app.Process inner (0xB38C0), raz na klatke, glowny watek, BEZ skokow do prologu. NIE uzywac
+// 0xB3750 (RunOneFrame) - ma wewnetrzny `jne 0xB3753` skaczacy w SRODEK 5-bajtowego patcha -> crash.
+#define VCORE_HOOK_RVA             0xB38C0
+#define VCORE_HOOK_RESUME_RVA      0xB38C5
 #define VCORE_RULQS_RVA            0x80FA0        // RequestUseLocalQuickSlot (__thiscall, ret 4)
 #define VCORE_PLAYER_SINGLETON_RVA 0x1B8C664      // *(void**) = CPythonPlayer*
-static const unsigned char VCORE_PROLOGUE[5] = {0x56, 0x8B, 0xF1, 0x8B, 0xCE};
+static const unsigned char VCORE_PROLOGUE[5] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF};
 
 typedef void(__thiscall *PFN_RULQS)(void *self, unsigned idx);
 
