@@ -86,68 +86,54 @@ def explain_points(d):
     return ok, checks
 
 
+def f32bits(x):
+    """Bity float32 danej liczby jako uint32 (do szukania HP trzymanego jako float)."""
+    return struct.unpack("<I", struct.pack("<f", float(x)))[0]
+
+
 def mode_pair(pm, regions, hp, mhp):
-    """Szuka dwordow X, Y odleglych o 'gap' (1..3), gdzie X^Y == hp^mhp. Przy szyfrowaniu stalym
-    kluczem klucz sie skraca, wiec dziala tez bez znajomosci klucza. Dla vCore (bez szyfrowania)
-    prawdziwa para ma KLUCZ=0. Zbiera trafienia i wypisuje okolice; key=0 na gorze."""
-    target = (hp ^ mhp) & 0xFFFFFFFF
-    print("\n=== TRYB PARA HP: szukam X,Y (odstep 1-3) z X^Y == %#010x (= %d ^ %d) ==="
-          % (target, hp, mhp))
-    if target == 0:
-        print("HP == maxHP -> XOR par = 0, pasuje KAZDA rowna para (miliony). Pominieto.")
-        print("Uzyj trybu znanych wartosci (--exp/--maxexp...) albo zejdz HP ponizej maxHP.")
+    """Szuka HP obok maxHP (odstep 1-3), próbujac obu kodowan: int32 i float32. Dla vCore
+    (nieszyfrowane) to pewny sposob - o ile HP != maxHP. Wypisuje okolice w obu interpretacjach."""
+    print("\n=== TRYB PARA HP (int + float): HP=%d  maxHP=%d ===" % (hp, mhp))
+    if hp == mhp:
+        print("HP == maxHP -> nie da sie odroznic pary. Daj sie TRAFIC (HP < maxHP) i podaj --hp aktualne.")
         return 0
-    hits = []       # (key, gap, order, addr, window_decoded, base_rel)
-    _CAP = 4000     # bezpiecznik: nie zbieraj w nieskonczonosc
+    encs = [("int", hp & 0xFFFFFFFF, mhp & 0xFFFFFFFF),
+            ("float", f32bits(hp), f32bits(mhp))]
+    hits = 0
     for rb, rs in regions:
         try:
             buf = pm.read_bytes(rb, rs)
         except Exception:
             continue
         u = np.frombuffer(buf[:(len(buf) // 4) * 4], dtype="<u4")
-        if u.size < 4:
-            continue
-        for gap in (1, 2, 3):
-            idxs = np.nonzero((u[:-gap] ^ u[gap:]) == np.uint32(target))[0]
-            for i in idxs:
+        n = u.size
+        for label, A, B in encs:
+            for i in np.nonzero(u == np.uint32(A))[0]:
                 i = int(i)
-                a = int(u[i])
-                # a moze byc HP albo maxHP; klucz wylicza sie z zalozenia, ktore to
-                for order, va in (("HP,maxHP", hp), ("maxHP,HP", mhp)):
-                    key = a ^ va
-                    lo = max(0, i - 20)
-                    window = dec(u[lo:i + 24], key)
-                    hits.append((key, gap, order, rb + i * 4, window, lo - i))
-            if len(hits) >= _CAP:
-                print("(osiagnieto limit %d trafien - przerywam skan)" % _CAP)
-                break
-        if len(hits) >= _CAP:
-            break
+                for g in (1, 2, 3):
+                    j = i + g
+                    if j < n and int(u[j]) == B:
+                        hits += 1
+                        addr = rb + i * 4
+                        print("\n[HIT %s] HP@%#010x  maxHP@+%d dword (gap=%d)" % (label, addr, g, g))
+                        lo = max(0, i - 16)
+                        hi = min(n, i + 20)
+                        for kk in range(lo, hi):
+                            raw = int(u[kk])
+                            iv = struct.unpack("<i", struct.pack("<I", raw))[0]
+                            fv = struct.unpack("<f", struct.pack("<I", raw))[0]
+                            fvs = (" float=%.3f" % fv) if 1e-3 < abs(fv) < 1e9 else ""
+                            mark = "  <== HP" if kk == i else ("  <== maxHP" if kk == j else "")
+                            print("   %+3d: int=%12d%s%s" % (kk - i, iv, fvs, mark))
+                        if hits >= 15:
+                            print("\n(limit trafien - patrz plik)")
+                            return hits
+                        break
     if not hits:
-        print("Brak trafien. Czy HP/maxHP sa DOKLADNE i aktualne (po buffach/zdjeciu HP+)?")
-        print("Sprobuj tez: python recon/find_hp.py -e <exe> --hp H --maxhp M --shape")
-        return 0
-    # key=0 najpierw (vCore nieszyfrowany), potem mniejsze klucze; ogranicz wydruk
-    hits.sort(key=lambda h: (h[0] != 0, h[0]))
-    print("Trafien: %d. Najbardziej prawdopodobne (key=0 = brak szyfrowania):" % len(hits))
-    seen = set()
-    shown = 0
-    for key, gap, order, addr, window, base in hits:
-        if addr in seen:        # ta sama para pod dwoma 'order' - pokaz raz
-            continue
-        seen.add(addr)
-        print("\n[HIT] addr=%#010x  gap=%d  zalozenie=%s  KLUCZ=%#010x" % (addr, gap, order, key))
-        for j, val in enumerate(window):
-            rel = base + j
-            if -16 <= rel <= 18:
-                mark = "  <== X (%s)" % order.split(",")[0] if rel == 0 else (
-                    "  <== Y (+%d)" % gap if rel == gap else "")
-                print("    rel %+3d : %12d%s" % (rel, val, mark))
-        shown += 1
-        if shown >= 10:
-            print("\n(...wiecej trafien pominieto; patrz plik logu)")
-            break
-    return len(hits)
+        print("Brak pary HP/maxHP (int ani float). Czy HP i maxHP sa DOKLADNE i ROZNE?")
+        print("Jesli HP jest float z ulamkiem, podaj zaokraglone - sprobuje tez sasiedztwo.")
+    return hits
 
 
 def _dump_anchor_neighbourhoods(pm, pos, occ, labelof, span=16, limit=24):
@@ -330,18 +316,18 @@ def main():
                  "HP": args.hp, "maxHP": args.maxhp, "PM": args.sp, "maxPM": args.maxsp}
         n_known = sum(1 for v in known.values() if v is not None)
         did = False
-        # 1) najlepszy: kilka znanych wartosci (dziala tez gdy HP==maxHP)
-        if n_known >= 3 and (args.exp is not None or args.maxexp is not None or args.level is not None):
-            mode_known(pm, regions, known)
-            did = True
-        # 2) para HP (gdy HP != maxHP)
+        # 1) najpewniejszy: para HP/maxHP (int+float), gdy HP != maxHP
         if args.hp is not None and args.maxhp is not None and args.hp != args.maxhp:
             mode_pair(pm, regions, args.hp, args.maxhp)
+            did = True
+        # 2) gdy HP==maxHP lub brak: kilka znanych wartosci
+        elif n_known >= 3 and (args.exp is not None or args.maxexp is not None or args.level is not None):
+            mode_known(pm, regions, known)
             did = True
         # 3) ostatecznosc: ksztalt
         if args.shape or not did:
             if not did:
-                print("(za malo danych - podaj np. --level --exp --maxexp --hp --maxhp; wlaczam ksztalt)")
+                print("(za malo danych - podaj np. --hp --maxhp (rozne) albo --level/--exp; wlaczam ksztalt)")
             mode_shape(pm, regions, args.min_run)
     finally:
         sys.stdout = sys.__stdout__
