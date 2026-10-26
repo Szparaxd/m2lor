@@ -245,10 +245,10 @@ class RadarMap:
         self.vt = rtti.find_vtables(self.pm, self.base, mod.SizeOfImage,
                                     [HERO_CLASS, ACTOR_CLASS, EFF_CLASS, MAPOUT_CLASS])
         print("[rtti] " + ", ".join("%s=base+0x%X" % (k, v - self.base) for k, v in self.vt.items()))
-        try:   # opcjonalne - bez CPythonPlayer radar dziala, tylko bez HP/auto-mikstury
+        try:   # preferowane: obiekt gracza po RTTI. Brak (np. vCore) -> HP szukamy skanem ksztaltu
             self.vt.update(rtti.find_vtables(self.pm, self.base, mod.SizeOfImage, [PLAYER_CLASS]))
         except LookupError as e:
-            print("[hp] %s - auto-mikstura wylaczona" % e)
+            print("[hp] %s - sprobuje znalezc HP skanem bez RTTI" % e)
 
         # auto-mikstura
         self.player_obj = None
@@ -508,6 +508,9 @@ class RadarMap:
     def rescan(self):
         hero, mapout, player, mobs, effs, metins = None, None, None, [], [], []
         player_vt = self.vt.get(PLAYER_CLASS)
+        # gdy brak RTTI CPythonPlayer (np. vCore) - szukamy tablicy punktow po ksztalcie (bez RTTI)
+        need_pts_scan = player_vt is None and self.points_addr is None
+        pts_cand = (None, -1)
         eff_x = self.off["eff_x"]
         hero_vt = self.vt[HERO_CLASS]
         mob_vt = self.vt[ACTOR_CLASS]
@@ -531,6 +534,10 @@ class RadarMap:
                 hh = np.nonzero(u == player_vt)[0]
                 if len(hh):
                     player = rb + int(hh[0]) * 4
+            if need_pts_scan:
+                a, rep = autopot.scan_points_block(u, rb)
+                if rep > pts_cand[1]:
+                    pts_cand = (a, rep)
             for h in np.nonzero(u == mob_vt)[0]:
                 mobs.append(rb + int(h) * 4)
             for h in np.nonzero(u == eff_vt)[0]:
@@ -553,6 +560,10 @@ class RadarMap:
             self.points_addr = player + off if off is not None else None
             print("[hp] tablica punktow: %s" % ("CPythonPlayer+0x%X" % off if off is not None
                                                  else "nie znaleziona"))
+        elif need_pts_scan and pts_cand[0] is not None:
+            self.points_addr = pts_cand[0]
+            print("[hp] tablica punktow (skan bez RTTI): 0x%X (powt. klucza %d)"
+                  % (pts_cand[0], pts_cand[1]))
         self.mobs = mobs
         self.effs = effs
         self.metins = metins

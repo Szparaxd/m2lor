@@ -19,6 +19,8 @@ import subprocess
 import time
 from ctypes import wintypes
 
+import numpy as np
+
 P_LEVEL, P_HP, P_MAX_HP, P_SP, P_MAX_SP = 1, 5, 6, 7, 8
 
 u32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -66,6 +68,35 @@ def find_points(pm, player_obj, span=0x40000):
         if rep > best_rep:
             best, best_rep = i * 4, rep
     return best
+
+
+def scan_points_block(u, base):
+    """Szuka tablicy punktow w jednym bloku pamieci (u = numpy uint32, base = adres bloku) BEZ
+    polegania na RTTI/CPythonPlayer - potrzebne, gdy nie znamy obiektu gracza (np. vCore nie ma
+    RTTI CPythonPlayer). Tablica ma charakterystyczny ksztalt: na [0] klucz XOR, potem punkty, a
+    setki zerowych pol leza w pamieci jako KLUCZ powtorzony wiele razy pod rzad. Szukamy dlugich
+    runow tej samej wartosci (= klucz), a tuz przed nimi weryfikujemy naglowek przez looks_like_points.
+    Zwraca (adres, liczba_powtorzen_klucza) najlepszego kandydata albo (None, -1)."""
+    n = u.shape[0]
+    if n < 300:
+        return None, -1
+    changes = np.nonzero(u[1:] != u[:-1])[0] + 1          # granice runow jednakowych wartosci
+    starts = np.concatenate(([0], changes))
+    runs = np.concatenate((changes, [n])) - starts
+    best, best_rep = None, MIN_KEY_REPEATS - 1
+    for idx in np.nonzero(runs >= MIN_KEY_REPEATS)[0]:
+        run_start = int(starts[idx])
+        k = np.uint32(u[run_start])
+        for p in range(run_start - 1, max(0, run_start - 32) - 1, -1):
+            if u[p] != k or p + 16 > n:                   # start tablicy ma memory[0]==klucz (d[0]==0)
+                continue
+            d = [int(x) for x in (u[p:p + 16] ^ k).view(np.int32)]
+            if looks_like_points(d):
+                rep = int((u[p + 1:p + 256] == k).sum())
+                if rep > best_rep:
+                    best, best_rep = p, rep
+                break
+    return (base + best * 4, best_rep) if best is not None else (None, -1)
 
 
 def read_points(pm, addr, count=9):
