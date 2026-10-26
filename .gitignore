@@ -12,3 +12,4 @@ injector/*.obj
 
 # Robocze zrzuty
 logs/inventory.txt
+logs/find_hp.txt
