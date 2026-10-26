@@ -160,16 +160,13 @@ def mode_known(pm, regions, known):
     labelof = {}
     for l, v in items:
         labelof.setdefault(v, l)
-    anchors = sorted([(abs(v), v, l) for l, v in items if abs(v) > 5000], reverse=True)
-    if not anchors:
-        anchors = sorted([(abs(v), v, l) for l, v in items if abs(v) > 100], reverse=True)
-    if not anchors:
-        print("Brak wyroznikowej wartosci - podaj --exp i --maxexp (duze liczby).")
-        return
-    _, anchor_val, anchor_label = anchors[0]
-    print("\n=== TRYB ZNANE WARTOSCI: kotwica %s=%d; znane=%s ==="
-          % (anchor_label, anchor_val, sorted(vals)))
-    av = np.uint32(anchor_val & 0xFFFFFFFF)
+    # kotwice = wartosci wyroznikowe (probujemy KILKU, bo np. wymPD moze nie byc trzymane w strukturze)
+    anchor_vals = sorted({v for _, v in items if abs(v) > 1000}, reverse=True)
+    if not anchor_vals:
+        anchor_vals = sorted({v for _, v in items if abs(v) > 100}, reverse=True)
+    print("\n=== TRYB ZNANE WARTOSCI: kotwice=%s; znane=%s ==="
+          % (anchor_vals, sorted(vals)))
+    occ = {a: 0 for a in anchor_vals}
     results = []
     for rb, rs in regions:
         try:
@@ -177,26 +174,39 @@ def mode_known(pm, regions, known):
         except Exception:
             continue
         u = np.frombuffer(buf[:(len(buf) // 4) * 4], dtype="<u4")
-        for i in np.nonzero(u == av)[0]:
-            i = int(i)
-            lo = max(0, i - 48)
-            hi = min(u.size, i + 48)
-            win = dec(u[lo:hi], 0)
-            cnt = len(vals & set(win))
-            if cnt >= 3:
-                results.append((cnt, rb + i * 4, lo - i, win))
-    results.sort(key=lambda r: r[0], reverse=True)
+        for a in anchor_vals:
+            idxs = np.nonzero(u == np.uint32(a & 0xFFFFFFFF))[0]
+            occ[a] += len(idxs)
+            for i in idxs:
+                i = int(i)
+                lo = max(0, i - 48)
+                win = dec(u[lo:min(u.size, i + 48)], 0)
+                cnt = len(vals & set(win))
+                if cnt >= 3:
+                    results.append((cnt, a, rb + i * 4, lo - i, win))
+    print("Ile razy kotwice wystepuja w pamieci (0 = NIE trzymane jako zwykly int32):")
+    for a in anchor_vals:
+        print("  %-10d %-8s : %d razy" % (a, "(%s)" % labelof.get(a, "?"), occ[a]))
     if not results:
-        print("Nie znalazlem okna z kotwica i >=3 znanymi wartosciami. Czy liczby sa DOKLADNE?")
+        print("\nBrak okna z >=3 znanymi wartosciami blisko siebie.")
+        print("-> Wartosci moga byc trzymane inaczej (wymPD z tabeli; EXP jako 64-bit; inny uklad).")
+        print("-> Najpewniej: zejdz HP PONIZEJ maxHP w grze i odpal z samym --hp/--maxhp (tryb par).")
         return
-    print("Okien-kandydatow: %d. Najlepsze:" % len(results))
-    for cnt, addr, base, win in results[:5]:
-        print("\n[OKNO] addr(kotwicy)=%#010x  trafien znanych=%d/%d" % (addr, cnt, len(vals)))
+    results.sort(key=lambda r: r[0], reverse=True)
+    print("\nOkien-kandydatow: %d. Najlepsze (po liczbie trafien):" % len(results))
+    seen = set()
+    for cnt, a, addr, base, win in results:
+        if addr in seen:
+            continue
+        seen.add(addr)
+        print("\n[OKNO] kotwica=%d  addr=%#010x  trafien znanych=%d/%d" % (a, addr, cnt, len(vals)))
         for j, val in enumerate(win):
             rel = base + j
             if -24 <= rel <= 28:
                 tag = ("  <== %s" % labelof[val]) if (val in labelof and val != 0) else ""
                 print("    rel %+3d : %12d%s" % (rel, val, tag))
+        if len(seen) >= 6:
+            break
 
 
 def mode_shape(pm, regions, min_run):

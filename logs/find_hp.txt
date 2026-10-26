@@ -1,0 +1,5 @@
+[wynik zapisywany do C:\Metin\radar-project\logs\find_hp.txt]
+Proces vCore.exe (PID 17964): 758 regionow zapisywalnych, razem 254.4 MB
+
+=== TRYB ZNANE WARTOSCI: kotwica wymPD=429279; znane=[21, 660, 3886, 180721, 429279] ===
+Nie znalazlem okna z kotwica i >=3 znanymi wartosciami. Czy liczby sa DOKLADNE?
