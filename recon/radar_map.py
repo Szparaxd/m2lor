@@ -266,7 +266,7 @@ class RadarMap:
         self._pts_valid = False
         # picie bez fokusu: wstrzykujemy autopot.dll i gadamy z nim przez potok (recon/autopot.py).
         # Gdy sie nie uda (brak DLL / nie zbudowany) - zostaje stara sciezka SendInput (tylko z fokusem).
-        self.pipe = autopot.PipeDrinker()
+        self.pipe = autopot.PipeDrinker(self.pm.process_id)   # potok per-instancja (po PID)
         self.dll_status = self._inject_dll()
         # vnum mikstur -> picie wprost z EQ; pusta lista -> picie slotem paska
         self.pot_vnums = []
@@ -819,7 +819,7 @@ class RadarMap:
         slot = int(POTION_KEY) - 1 if POTION_KEY.isdigit() else 0   # "1" -> indeks 0
         via = None
         if self.pot_vnums:
-            if autopot.drink_by_vnum(self.pot_vnums):      # skan EQ: ignoruje pasek, bez fokusu
+            if autopot.drink_by_vnum(self.pm.process_id, self.pot_vnums):  # skan EQ, po PID gry
                 via = "EQ"
         elif self.pipe.drink(slot):                        # slot paska przez DLL, bez fokusu
             via = "slot"

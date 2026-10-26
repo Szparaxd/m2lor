@@ -45,7 +45,7 @@ def main():
         print("[!] Bez DLL nie zrobie zrzutu. Zbuduj (build.bat) i sprobuj ponownie.")
         return
 
-    inv = autopot.dump_inventory()
+    inv = autopot.dump_inventory(pm.process_id)
     if inv is None:
         print("[!] DLL nie odebral komendy. Czy to NOWA autopot.dll? Zrestartuj klienta gry.")
         return

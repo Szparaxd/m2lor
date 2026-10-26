@@ -145,7 +145,7 @@ def press_key(hwnd, ch, hold=KEY_HOLD):
 # Potok swiadomie przechodzi granice 32/64-bit: to tylko bajty, bez CreateRemoteThread miedzy
 # roznymi bitowosciami (co byloby zawodne).
 # ---------------------------------------------------------------------------
-PIPE_NAME = r"\\.\pipe\m2autopot"
+PIPE_PREFIX = r"\\.\pipe\m2autopot_"      # pelna nazwa = PIPE_PREFIX + PID gry (per-instancja)
 _GENERIC_WRITE = 0x40000000
 _OPEN_EXISTING = 3
 _INVALID_HANDLE = 0xFFFFFFFFFFFFFFFF
@@ -166,35 +166,40 @@ k32.CloseHandle.restype = wintypes.BOOL
 k32.CloseHandle.argtypes = [wintypes.HANDLE]
 
 
-def _open_pipe():
-    """Uchwyt do zapisu w potoku DLL albo None. Ponawia: serwer ma JEDNA instancje i na krotko
-    odtwarza ja miedzy polaczeniami - trafienie w te luke daje FILE_NOT_FOUND / PIPE_BUSY."""
+def _pipe_name(pid):
+    return PIPE_PREFIX + str(int(pid))
+
+
+def _open_pipe(pid):
+    """Uchwyt do zapisu w potoku DLL danej GRY (po PID) albo None. Ponawia: serwer ma JEDNA
+    instancje i na krotko odtwarza ja miedzy polaczeniami - luka daje FILE_NOT_FOUND / PIPE_BUSY."""
+    name = _pipe_name(pid)
     for _ in range(8):
-        h = k32.CreateFileW(PIPE_NAME, _GENERIC_WRITE, 0, None, _OPEN_EXISTING, 0, None)
+        h = k32.CreateFileW(name, _GENERIC_WRITE, 0, None, _OPEN_EXISTING, 0, None)
         if h and h != _INVALID_HANDLE:
             return h
         err = ctypes.get_last_error()
         if err == _ERROR_PIPE_BUSY:
-            k32.WaitNamedPipeW(PIPE_NAME, 300)
+            k32.WaitNamedPipeW(name, 300)
         elif err == _ERROR_FILE_NOT_FOUND:
             time.sleep(0.02)
         else:
-            return None                       # potoku nie ma = DLL nie wstrzykniety
+            return None                       # potoku nie ma = DLL nie wstrzykniety w ten proces
     return None
 
 
-def dll_loaded():
-    """True, gdy autopot.dll (serwer potoku) dziala w grze."""
-    h = _open_pipe()
+def dll_loaded(pid):
+    """True, gdy autopot.dll (serwer potoku) dziala w grze o danym PID."""
+    h = _open_pipe(pid)
     if h is not None:
         k32.CloseHandle(h)
         return True
     return False
 
 
-def _send_raw(data):
-    """Wysyla surowe bajty jednym otwarciem potoku. True, gdy wszystko zapisane."""
-    h = _open_pipe()
+def _send_raw(pid, data):
+    """Wysyla surowe bajty jednym otwarciem potoku gry (po PID). True, gdy wszystko zapisane."""
+    h = _open_pipe(pid)
     if h is None:
         return False
     n = wintypes.DWORD(0)
@@ -203,23 +208,24 @@ def _send_raw(data):
     return ok
 
 
-def send_command(text):
-    """Wysyla skrypt Pythona do wykonania w grze (DLL). Komenda konczy sie bajtem NUL (framing),
-    wiec skrypt moze byc wieloliniowy. True, gdy DLL odebral."""
-    return _send_raw(text.encode("utf-8", "replace") + b"\x00")
+def send_command(pid, text):
+    """Wysyla skrypt Pythona do wykonania w grze o danym PID. Komenda konczy sie bajtem NUL
+    (framing), wiec skrypt moze byc wieloliniowy. True, gdy DLL odebral."""
+    return _send_raw(pid, text.encode("utf-8", "replace") + b"\x00")
 
 
 class PipeDrinker:
-    """Picie przez DLL: wysyla komende 'uzyj slotu paska'. Otwiera-pisze-zamyka za kazdym razem -
-    picie jest rzadkie (cooldown), a tak nie blokujemy jedynej instancji potoku."""
+    """Picie przez DLL konkretnej gry (po PID): wysyla komende 'uzyj slotu paska'.
+    Otwiera-pisze-zamyka za kazdym razem - picie jest rzadkie, nie blokujemy instancji potoku."""
 
-    def __init__(self):
+    def __init__(self, pid):
+        self.pid = pid
         self.last_ok = False
 
     def drink(self, slot):
         """Wyslij 'wypij slot N paska' (0..8). True gdy komenda dotarla do DLL."""
         self.last_ok = send_command(
-            "import player\nplayer.RequestUseLocalQuickSlot(%d)" % int(slot))
+            self.pid, "import player\nplayer.RequestUseLocalQuickSlot(%d)" % int(slot))
         return self.last_ok
 
 
@@ -236,13 +242,13 @@ for _s in range(_N):
 '''
 
 
-def drink_by_vnum(vnums):
-    """Wypij pierwsza miksture o jednym z podanych vnum, prosto z ekwipunku (ignoruje pasek).
-    vnums - lista vnum (probowane po kolei/jako zbior). True gdy komenda dotarla do DLL."""
+def drink_by_vnum(pid, vnums):
+    """Wypij w grze o danym PID pierwsza miksture o jednym z podanych vnum, prosto z ekwipunku
+    (ignoruje pasek). vnums - lista vnum. True gdy komenda dotarla do DLL."""
     if not vnums:
         return False
     vns = ",".join(str(int(v)) for v in vnums)
-    return send_command(_DRINK_BY_VNUM_TEMPLATE.replace("__VNS__", vns))
+    return send_command(pid, _DRINK_BY_VNUM_TEMPLATE.replace("__VNS__", vns))
 
 
 def _project_paths():
@@ -252,8 +258,8 @@ def _project_paths():
 
 
 def ensure_injected(pid, timeout=10.0):
-    """Wstrzykuje autopot.dll do gry, jesli jeszcze nie ma. Zwraca (ok, komunikat)."""
-    if dll_loaded():
+    """Wstrzykuje autopot.dll do gry o danym PID, jesli jeszcze nie ma. Zwraca (ok, komunikat)."""
+    if dll_loaded(pid):
         return True, "juz wstrzykniety"
     dll, inj = _project_paths()
     if not os.path.exists(dll) or not os.path.exists(inj):
@@ -265,7 +271,7 @@ def ensure_injected(pid, timeout=10.0):
         return False, "inject.exe: %s" % e
     t0 = time.time()
     while time.time() - t0 < 3.0:            # serwer potoku wstaje chwile po LoadLibrary
-        if dll_loaded():
+        if dll_loaded(pid):
             return True, "wstrzyknieto"
         time.sleep(0.1)
     msg = (r.stdout or r.stderr or "").strip().splitlines()
@@ -307,8 +313,8 @@ finally:
 '''
 
 
-def dump_inventory(timeout=3.0):
-    """Zleca grze zrzut ekwipunku i zwraca liste krotek (slot, vnum, count, name).
+def dump_inventory(pid, timeout=3.0):
+    """Zleca grze o danym PID zrzut ekwipunku i zwraca liste krotek (slot, vnum, count, name).
     None = DLL nie odebral komendy (niewstrzykniety?). [] = puste / brak postaci."""
     try:
         if os.path.exists(INV_DUMP_PATH):
@@ -316,7 +322,7 @@ def dump_inventory(timeout=3.0):
     except OSError:
         pass
     snippet = _DUMP_TEMPLATE.replace("__PATH__", INV_DUMP_PATH)
-    if not send_command(snippet):
+    if not send_command(pid, snippet):
         return None
     t0 = time.time()
     while time.time() - t0 < timeout:

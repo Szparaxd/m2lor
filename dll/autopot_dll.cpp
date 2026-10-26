@@ -26,7 +26,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PIPE_NAME "\\\\.\\pipe\\m2autopot"
+// Pelna nazwa potoku = PIPE_PREFIX + PID procesu gry. PER-INSTANCJA: dwa klienty (GameCoreTop,
+// vCore) maja osobne potoki, wiec radar trafia zawsze do wlasciwej gry.
+#define PIPE_PREFIX "\\\\.\\pipe\\m2autopot_"
 
 // --- wskazniki na funkcje python27.dll (cdecl) ---
 typedef int  (__cdecl *PFN_AddPendingCall)(int (__cdecl *)(void *), void *);
@@ -84,10 +86,16 @@ static void queue_script(const char *script)
 
 static DWORD WINAPI server_thread(LPVOID)
 {
-    // Jedna instancja na proces: drugie wstrzykniecie nie ma stawiac drugiego serwera.
-    CreateMutexA(NULL, FALSE, "m2autopot_dll_once");
+    // Nazwa potoku i mutexu zawieraja PID tego procesu gry (per-instancja).
+    DWORD pid = GetCurrentProcessId();
+    char pipe_name[64], mutex_name[64];
+    _snprintf(pipe_name, sizeof(pipe_name), "%s%lu", PIPE_PREFIX, pid);
+    _snprintf(mutex_name, sizeof(mutex_name), "m2autopot_dll_%lu", pid);
+
+    // Jedna instancja na proces: drugie wstrzykniecie do TEGO procesu nie stawia drugiego serwera.
+    CreateMutexA(NULL, FALSE, mutex_name);
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
-        log_dbg("[autopot] DLL juz aktywny - drugi watek serwera konczy");
+        log_dbg("[autopot] DLL juz aktywny w tym procesie - drugi watek serwera konczy");
         return 0;
     }
 
@@ -98,11 +106,11 @@ static DWORD WINAPI server_thread(LPVOID)
         log_dbg("[autopot] python27.dll / Py_AddPendingCall nie znaleziony - koniec");
         return 0;
     }
-    log_dbg("[autopot] gotowy, nasluchuje na " PIPE_NAME);
+    log_dbg("[autopot] gotowy, nasluchuje na potoku per-PID");
 
     for (;;) {
         HANDLE pipe = CreateNamedPipeA(
-            PIPE_NAME, PIPE_ACCESS_INBOUND,
+            pipe_name, PIPE_ACCESS_INBOUND,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
             PIPE_UNLIMITED_INSTANCES, 0, 64, 0, NULL);
         if (pipe == INVALID_HANDLE_VALUE) {
