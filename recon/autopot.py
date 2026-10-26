@@ -140,6 +140,21 @@ def scan_points_plain(u, base):
     return base + best * 4, best_score
 
 
+def read_point_ptr(pm, base, cfg, index):
+    """Odczyt pojedynczego punktu przez STABILNY wskaznik singletona CPythonPlayer (dla buildow bez
+    RTTI, gdzie skan zawodzi - np. vCore). cfg: singleton_rva, array_off, stride, key. Zwraca wartosc
+    albo None (singleton==0 = postac jeszcze nie w swiecie). Uklad vCore: tablica 8-bajtowa, dolny
+    dword zaszyfrowany XOR; value(i) = *(base+singleton_rva) -> +array_off + i*stride, XOR key."""
+    try:
+        singleton = pm.read_uint(base + cfg["singleton_rva"])
+        if not singleton:
+            return None
+        raw = pm.read_uint(singleton + cfg["array_off"] + index * cfg["stride"])
+        return raw ^ cfg["key"]
+    except Exception:
+        return None
+
+
 def read_points(pm, addr, count=9):
     """Odszyfrowane punkty [0..count) spod adresu tablicy (klucz = raw[0])."""
     raw = struct.unpack("<%dI" % count, pm.read_bytes(addr, 4 * count))

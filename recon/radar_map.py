@@ -106,6 +106,12 @@ POTION_LOW = 50           # % HP - zacznij pic ponizej (suwak "Pij <", klawisze 
 POTION_HIGH = 75          # % HP - lej az do tego poziomu (suwak "Lecz do")
 POTION_COOLDOWN = 0.3     # s - min. odstep miedzy miksturami (suwak "Odstep")
 POTION_POLL = 0.07        # s - jak czesto dedykowana petla sprawdza HP (szybka reakcja, nie co klatke)
+# Stabilny odczyt HP przez wskaznik singletona CPythonPlayer - dla buildow bez RTTI, gdzie skan
+# pamieci zawodzi (np. vCore: tablica 8-bajtowa, dolny dword XOR). RVA/offsety sa SPECYFICZNE DLA
+# DANEGO BUILDU exe (znalezione analiza binarki). value(i)=*(base+singleton_rva)+array_off+i*stride ^key.
+POINT_PTR_CLIENTS = {
+    "vcore.exe": dict(singleton_rva=0x1B8C664, array_off=0x1A668, stride=8, key=0xE73AC1DA),
+}
 # Picie wprost z ekwipunku: vnum mikstur w data/potion_vnums.txt (edytowalny w locie).
 # Pusty plik -> picie slotem paska (POTION_KEY). Lista vnum -> skan EQ (net.SendItemUsePacket):
 # ignoruje pasek i przezywa przesuniecie stacka. Vnum podejrzysz przez recon/inv_dump.py.
@@ -266,6 +272,10 @@ class RadarMap:
         self._pct = 0.0
         self._pts_valid = False
         self._hp_scan_warned = False              # zeby nie spamowac logiem co rescan
+        # odczyt HP przez stabilny wskaznik (jesli ten build jest znany) - zamiast skanu
+        self.pt_ptr = POINT_PTR_CLIENTS.get(self.proc_name.lower())
+        if self.pt_ptr:
+            print("[hp] %s: odczyt HP przez wskaznik singletona (bez skanu)" % self.proc_name)
         # picie bez fokusu: wstrzykujemy autopot.dll i gadamy z nim przez potok (recon/autopot.py).
         # Gdy sie nie uda (brak DLL / nie zbudowany) - zostaje stara sciezka SendInput (tylko z fokusem).
         self.pipe = autopot.PipeDrinker(self.pm.process_id)   # potok per-instancja (po PID)
@@ -517,8 +527,8 @@ class RadarMap:
     def rescan(self):
         hero, mapout, player, mobs, effs, metins = None, None, None, [], [], []
         player_vt = self.vt.get(PLAYER_CLASS)
-        # gdy brak RTTI CPythonPlayer (np. vCore) - szukamy tablicy punktow po ksztalcie (bez RTTI)
-        need_pts_scan = player_vt is None and self.points_addr is None
+        # skan tablicy tylko gdy brak RTTI CPythonPlayer I nie mamy wskaznika singletona dla tego buildu
+        need_pts_scan = player_vt is None and self.points_addr is None and self.pt_ptr is None
         pts_cand = (None, -1)
         eff_x = self.off["eff_x"]
         hero_vt = self.vt[HERO_CLASS]
@@ -817,20 +827,28 @@ class RadarMap:
     def _autopot_step(self):
         """Jeden krok: odczyt HP, histereza (pij<low, lej do high), ewentualne picie. Zapisuje
         ostatnie HP do cache dla rysowania."""
-        if self.points_addr is None:
-            self._pts_valid = False
-            return
-        try:
-            pts = autopot.read_points(self.pm, self.points_addr, 16)
-        except Exception:
-            return
-        if not autopot.looks_like_points(pts):
-            # np. przelogowanie postaci - porzucamy adres, rescan poszuka tablicy od nowa
-            print("[hp] punkty przestaly pasowac - szukam tablicy ponownie")
-            self.points_addr = None
-            self._pts_valid = False
-            return
-        hp, mhp = pts[autopot.P_HP], pts[autopot.P_MAX_HP]
+        if self.pt_ptr is not None:
+            # stabilny wskaznik singletona (np. vCore) - bez skanu
+            hp = autopot.read_point_ptr(self.pm, self.base, self.pt_ptr, autopot.P_HP)
+            mhp = autopot.read_point_ptr(self.pm, self.base, self.pt_ptr, autopot.P_MAX_HP)
+            if hp is None or mhp is None or mhp <= 0 or hp < 0 or hp > mhp + 10000:
+                self._pts_valid = False     # postac nie w swiecie / chwilowo zle
+                return
+        else:
+            if self.points_addr is None:
+                self._pts_valid = False
+                return
+            try:
+                pts = autopot.read_points(self.pm, self.points_addr, 16)
+            except Exception:
+                return
+            if not autopot.looks_like_points(pts):
+                # np. przelogowanie postaci - porzucamy adres, rescan poszuka tablicy od nowa
+                print("[hp] punkty przestaly pasowac - szukam tablicy ponownie")
+                self.points_addr = None
+                self._pts_valid = False
+                return
+            hp, mhp = pts[autopot.P_HP], pts[autopot.P_MAX_HP]
         self._hp, self._mhp, self._pct, self._pts_valid = hp, mhp, 100.0 * hp / mhp, True
         pct = self._pct
         # histereza: zacznij ponizej low, przestan dopiero po dojsciu do high
