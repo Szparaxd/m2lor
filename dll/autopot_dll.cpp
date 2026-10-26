@@ -130,7 +130,7 @@ static int g_slot = 0;
 static void *g_tramp = NULL;
 
 // Wywolywane CO KLATKE z glownego watku (z wnetrza hooka). Gdy radar poprosil - pijemy natywnie.
-static void on_frame(void)
+static __declspec(noinline) void on_frame(void)
 {
     if (InterlockedExchange(&g_want_drink, 0)) {
         void *self = *(void **)(g_base + VCORE_PLAYER_SINGLETON_RVA);
@@ -149,7 +149,8 @@ static __declspec(naked) void hook_stub(void)
         call on_frame
         popfd
         popad
-        jmp dword ptr [g_tramp]
+        mov eax, g_tramp      ; eax = adres trampoliny (eax jest scratch na wejsciu funkcji)
+        jmp eax
     }
 }
 
