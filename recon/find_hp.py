@@ -223,6 +223,88 @@ def mode_known(pm, regions, known):
             break
 
 
+SNAP_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "logs", "hp_snap.txt")
+
+
+def mode_snap(pm, regions, value):
+    """Zapisuje adresy wszystkich dwordow == value (int) oraz == float(value) do pliku.
+    Potem (po zdjeciu zbroi) --diff sprawdzi, ktore sie zmienily na nowa wartosc = prawdziwe maxHP."""
+    vi = value & 0xFFFFFFFF
+    vf = f32bits(value)
+    print("\n=== SNAPSHOT: zapisuje adresy z wartoscia %d (int) i %d jako float ===" % (value, value))
+    rows = []
+    for rb, rs in regions:
+        try:
+            buf = pm.read_bytes(rb, rs)
+        except Exception:
+            continue
+        u = np.frombuffer(buf[:(len(buf) // 4) * 4], dtype="<u4")
+        for enc, V in (("int", vi), ("float", vf)):
+            for i in np.nonzero(u == np.uint32(V))[0]:
+                rows.append((rb + int(i) * 4, enc))
+    with open(SNAP_PATH, "w", encoding="utf-8") as f:
+        f.write("pid %d value %d\n" % (pm.process_id, value))
+        for addr, enc in rows:
+            f.write("%d %s\n" % (addr, enc))
+    print("Zapisano %d adresow (int+float) do %s" % (len(rows), SNAP_PATH))
+    print("TERAZ: zdejmij zbroje w grze, odczytaj nowe maxHP, i odpal:")
+    print("    python recon/find_hp.py -e <exe> --diff <noweMaxHP>")
+
+
+def mode_diff(pm, new_value):
+    """Czyta snapshot i pokazuje adresy, ktore zmienily sie na new_value (w tym samym kodowaniu).
+    To prawdziwe pole maxHP (ew. HP). Wypisuje okolice (int+float), zeby odczytac uklad."""
+    try:
+        with open(SNAP_PATH, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        print("[!] Brak %s - najpierw zrob --snap <maxHP> z zalozona zbroja." % SNAP_PATH)
+        return
+    hdr = lines[0].split()
+    snap_pid = int(hdr[1])
+    snap_val = int(hdr[3])
+    if snap_pid != pm.process_id:
+        print("[!] Snapshot byl dla PID %d, a teraz PID %d - gra zrestartowana, adresy nieaktualne."
+              % (snap_pid, pm.process_id))
+        print("    Zrob --snap jeszcze raz (z zalozona zbroja).")
+        return
+    ni = new_value & 0xFFFFFFFF
+    nf = f32bits(new_value)
+    print("\n=== DIFF: szukam adresow zmienionych z %d na %d (int lub float) ===" % (snap_val, new_value))
+    hits = 0
+    for line in lines[1:]:
+        addr_s, enc = line.split()
+        addr = int(addr_s)
+        try:
+            raw = struct.unpack("<I", pm.read_bytes(addr, 4))[0]
+        except Exception:
+            continue
+        want = ni if enc == "int" else nf
+        if raw == want:
+            hits += 1
+            print("\n[ZMIENIONE %s] addr=%#010x : %d -> %d" % (enc, addr, snap_val, new_value))
+            try:
+                win = np.frombuffer(pm.read_bytes(addr - 64, 128), dtype="<u4")
+            except Exception:
+                continue
+            for k in range(win.size):
+                rel = k - 16
+                r = int(win[k])
+                iv = struct.unpack("<i", struct.pack("<I", r))[0]
+                fv = struct.unpack("<f", struct.pack("<I", r))[0]
+                fvs = (" float=%.3f" % fv) if 1e-3 < abs(fv) < 1e9 else ""
+                mark = "  <== TU" if rel == 0 else ""
+                print("   %+3d: int=%12d%s%s" % (rel, iv, fvs, mark))
+            if hits >= 12:
+                print("\n(limit - patrz plik)")
+                break
+    if not hits:
+        print("Zero zmienionych na %d. Czy nowe maxHP == %d? (zdjeta zbroja, odczytane z gry)"
+              % (new_value, new_value))
+        print("Mozesz tez sprobowac wartosc +-kilka, albo HP zamiast maxHP.")
+
+
 def mode_shape(pm, regions, min_run):
     print("\n=== TRYB KSZTALT: szukam runow klucza (>=%d) i weryfikuje naglowek ===" % min_run)
     cands = []
@@ -290,6 +372,10 @@ def main():
     ap.add_argument("--maxexp", type=int, default=None, help="wymagane PD (EXP do nast. poziomu)")
     ap.add_argument("--sp", type=int, default=None, help="aktualne PM/mana")
     ap.add_argument("--maxsp", type=int, default=None, help="maks. PM/mana")
+    ap.add_argument("--snap", type=int, default=None, metavar="MAXHP",
+                    help="skan roznicowy krok 1: zapisz adresy z ta wartoscia (zbroja ZALOZONA)")
+    ap.add_argument("--diff", type=int, default=None, metavar="NOWE_MAXHP",
+                    help="skan roznicowy krok 2: pokaz adresy zmienione na te wartosc (zbroja ZDJETA)")
     ap.add_argument("--min-run", type=int, default=16, help="min. dlugosc runu klucza (tryb ksztalt)")
     ap.add_argument("--shape", action="store_true", help="wymus tryb ksztalt")
     args = ap.parse_args()
@@ -312,6 +398,14 @@ def main():
         total = sum(s for _, s in regions)
         print("Proces %s (PID %d): %d regionow zapisywalnych, razem %.1f MB"
               % (args.exe, pm.process_id, len(regions), total / 1048576.0))
+        # skan roznicowy (zdejmowanie zbroi) ma pierwszenstwo
+        if args.snap is not None:
+            mode_snap(pm, regions, args.snap)
+            return
+        if args.diff is not None:
+            mode_diff(pm, args.diff)
+            return
+
         known = {"poziom": args.level, "PD": args.exp, "wymPD": args.maxexp,
                  "HP": args.hp, "maxHP": args.maxhp, "PM": args.sp, "maxPM": args.maxsp}
         n_known = sum(1 for v in known.values() if v is not None)
