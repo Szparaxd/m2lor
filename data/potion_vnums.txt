@@ -1,0 +1,9 @@
+# Vnum mikstur do picia WPROST z ekwipunku (skan EQ, ignoruje pasek szybkiego dostepu).
+# Jeden vnum na linie; tekst po '#' to komentarz. Plik czytany na zywo (edytuj przy dzialajacym radarze).
+#
+# PUSTY plik (same komentarze) = picie slotem paska (POTION_KEY, domyslnie "1") - jak dotad.
+# Vnum swojej mikstury podejrzysz przez:  python recon/inv_dump.py
+#
+# Przyklad (odkomentuj i wpisz swoj vnum):
+# 27002   # Mikstura Czerwona (M)
+# 27003   # Mikstura Czerwona (L)

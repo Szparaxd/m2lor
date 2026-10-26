@@ -223,6 +223,28 @@ class PipeDrinker:
         return self.last_ok
 
 
+# Picie WPROST z ekwipunku: skan po vnum i net.SendItemUsePacket(cell) - bez paska, bez DirectInput.
+# Przezywa przesuniecie stacka (gdy mikstury wpadna do innej komorki, skan znajdzie je od nowa).
+# net.SendItemUsePacket(cell) i player.GetItemIndex/Count zweryfikowane w Source Client.
+_DRINK_BY_VNUM_TEMPLATE = r'''import player, net
+_VNS = [__VNS__]
+_N = player.INVENTORY_PAGE_SIZE * player.INVENTORY_PAGE_COUNT
+for _s in range(_N):
+    if player.GetItemIndex(_s) in _VNS and player.GetItemCount(_s) > 0:
+        net.SendItemUsePacket(_s)
+        break
+'''
+
+
+def drink_by_vnum(vnums):
+    """Wypij pierwsza miksture o jednym z podanych vnum, prosto z ekwipunku (ignoruje pasek).
+    vnums - lista vnum (probowane po kolei/jako zbior). True gdy komenda dotarla do DLL."""
+    if not vnums:
+        return False
+    vns = ",".join(str(int(v)) for v in vnums)
+    return send_command(_DRINK_BY_VNUM_TEMPLATE.replace("__VNS__", vns))
+
+
 def _project_paths():
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # radar-project\
     return (os.path.join(base, "dll", "autopot.dll"),

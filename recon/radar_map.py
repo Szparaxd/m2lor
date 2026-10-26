@@ -23,6 +23,8 @@ Tryby i klawisze:
     [ / ]  - prog auto-mikstury -/+ 5%
     J  - (po)wstrzyknij autopot.dll = picie BEZ fokusu (wymaga build.bat: dll + inject.exe).
          Bez DLL dziala stara sciezka SendInput - tylko gdy gra jest aktywnym oknem.
+    data/potion_vnums.txt - wpisz vnum mikstury -> picie WPROST z ekwipunku (skan, ignoruje pasek,
+         przezywa przesuniecie stacka); pusty plik -> picie slotem POTION_KEY. Vnum: recon/inv_dump.py.
     Okno radaru mozna dowolnie rozciagac (mapa i znaczniki dopasowuja sie do rozmiaru).
     M  - wymus przebudowe obrazu mapy (bez cache)
     ESC - wyjscie
@@ -100,6 +102,11 @@ PLAYER_CLASS = "CPythonPlayer"
 POTION_KEY = "1"          # slot paska z czerwonymi miksturami
 POTION_THRESHOLD = 50     # % HP, ponizej ktorego pijemy (zmiana: [ / ])
 POTION_COOLDOWN = 1.5     # s miedzy miksturami (zeby nie wypic kilku na raz przed leczeniem)
+# Picie wprost z ekwipunku: vnum mikstur w data/potion_vnums.txt (edytowalny w locie).
+# Pusty plik -> picie slotem paska (POTION_KEY). Lista vnum -> skan EQ (net.SendItemUsePacket):
+# ignoruje pasek i przezywa przesuniecie stacka. Vnum podejrzysz przez recon/inv_dump.py.
+POTION_VNUMS_PATH = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                  "..", "data", "potion_vnums.txt"))
 
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 WRITABLE = {0x04, 0x08, 0x40, 0x80}
@@ -149,6 +156,22 @@ def load_mob_list(path=None):
                     print("[lista] pomijam linie %d: %r" % (n, line.strip()))
     except OSError:
         print("[lista] brak %s - tylko bossy rangi 4/5" % path)
+    return out
+
+
+def load_potion_vnums(path=None):
+    """Lista vnum mikstur do picia (skan EQ); puste gdy brak pliku -> picie slotem paska.
+    Format: jeden vnum na linie, komentarze po '#'."""
+    path = path or POTION_VNUMS_PATH
+    out = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                p = line.split("#", 1)[0].split()
+                if p and p[0].isdigit():
+                    out.append(int(p[0]))
+    except OSError:
+        pass
     return out
 
 
@@ -235,6 +258,10 @@ class RadarMap:
         # Gdy sie nie uda (brak DLL / nie zbudowany) - zostaje stara sciezka SendInput (tylko z fokusem).
         self.pipe = autopot.PipeDrinker()
         self.dll_status = self._inject_dll()
+        # vnum mikstur -> picie wprost z EQ; pusta lista -> picie slotem paska
+        self.pot_vnums = []
+        self._pot_vnums_mtime = None
+        self._reload_pot_vnums()
 
         self.root = root
         # pasek sterowania auto-miksturą (checkbox + suwak); klawisze [H] [ / ] dziala dalej i sa
@@ -288,6 +315,7 @@ class RadarMap:
             try:
                 self.rescan()
                 self._reload_moblist()
+                self._reload_pot_vnums()
                 # teleport/zmiana mapy -> przeladuj tlo (budowa obrazu tez w tle, potem podmiana)
                 name = self._current_map_name()
                 if name and not self.fixed_map and name != self.map.name:
@@ -307,6 +335,17 @@ class RadarMap:
         self.off = off
         print("[kalibracja]\n  " + "\n  ".join(report))
         self.rescan()
+
+    def _reload_pot_vnums(self):
+        """Przeladowuje liste vnum mikstur, gdy plik sie zmienil (edycja w trakcie dzialania)."""
+        try:
+            mtime = os.path.getmtime(POTION_VNUMS_PATH)
+        except OSError:
+            mtime = None
+        if mtime != self._pot_vnums_mtime:
+            self._pot_vnums_mtime = mtime
+            self.pot_vnums = load_potion_vnums()
+            print("[mikstura] vnum do picia: %s" % (self.pot_vnums or "(brak - slot paska)"))
 
     def _on_autopot_check(self):
         self.autopot_on = bool(self.autopot_var.get())
@@ -727,16 +766,19 @@ class RadarMap:
         if need and now - self._last_pot >= POTION_COOLDOWN:
             slot = int(POTION_KEY) - 1 if POTION_KEY.isdigit() else 0   # "1" -> indeks 0
             via = None
-            if self.pipe.drink(slot):                          # bez fokusu, przez DLL w grze
-                via = "DLL"
-            elif self.hwnd and autopot.press_key(self.hwnd, POTION_KEY):  # zapas: tylko z fokusem
+            if self.pot_vnums:
+                if autopot.drink_by_vnum(self.pot_vnums):      # skan EQ: ignoruje pasek, bez fokusu
+                    via = "EQ"
+            elif self.pipe.drink(slot):                        # slot paska przez DLL, bez fokusu
+                via = "slot"
+            if via is None and self.hwnd and autopot.press_key(self.hwnd, POTION_KEY):  # zapas: fokus
                 via = "klawisz"
             if via:
                 self._last_pot = now
                 self.pot_count += 1
-                print("[mikstura] HP %d/%d (%.0f%%) -> %s slot %s" % (hp, mhp, pct, via, POTION_KEY))
+                print("[mikstura] HP %d/%d (%.0f%%) -> %s" % (hp, mhp, pct, via))
         w = 180
-        c.create_rectangle(2, 2, 470, 41, fill="#0b0f0b", outline="")     # tlo dla czytelnosci
+        c.create_rectangle(2, 2, 560, 41, fill="#0b0f0b", outline="")     # tlo dla czytelnosci
         c.create_rectangle(8, 8, 8 + w, 22, fill="#300", outline="#000")
         c.create_rectangle(8, 8, 8 + w * max(0.0, min(1.0, hp / mhp)), 22, fill="#d22", outline="")
         c.create_line(8 + w * self.pot_threshold / 100, 6, 8 + w * self.pot_threshold / 100, 24,
@@ -747,13 +789,15 @@ class RadarMap:
                  else "WYL")
         focusfree = self.dll_status.startswith("wstrzyk")
         mode = "bez fokusu" if focusfree else "wymaga fokusu"
+        method = ("EQ vnum %s" % ",".join(map(str, self.pot_vnums))) if self.pot_vnums \
+            else "slot %s" % POTION_KEY
         # ostrzezenie o braku fokusu ma sens tylko bez DLL (z DLL fokus nie jest potrzebny)
         if (need and not focusfree and self.hwnd
                 and autopot.u32.GetForegroundWindow() != self.hwnd):
             state += "  ! GRA NIEAKTYWNA (brak DLL)"
         c.create_text(8, 33, anchor="w", fill="#ffe14d" if self.autopot_on else "#999",
-                      text="auto-mikstura [%s] %s: %s   [H]wl/wyl [ / ]prog [J]DLL:%s"
-                           % (POTION_KEY, mode, state, self.dll_status),
+                      text="auto-mikstura (%s, %s): %s   [H]wl/wyl [ / ]prog [J]DLL:%s"
+                           % (method, mode, state, self.dll_status),
                       font=("Consolas", 8))
 
 
