@@ -19,8 +19,9 @@ Tryby i klawisze:
     LPM na mobie - menu: dopisz do listy jako boss / specjalny / zwykly albo usun z listy
     R  - natychmiastowy skan encji (i tak skanuje w tle co RESCAN_SEC)
     K  - ponowna kalibracja offsetow pol (robiona automatycznie przy starcie)
-    H  - auto-mikstura wl/wyl (slot POTION_KEY ponizej progu HP)
-    [ / ]  - prog auto-mikstury -/+ 5%
+    H  - auto-mikstura wl/wyl
+    [ / ]  - prog "Pij <" -/+ 5% (histereza: pij ponizej "Pij<", lej az do "Lecz do")
+    Suwaki na gorze: Pij <% (start), Lecz do % (cel), Odstep s (min. czas miedzy miksturami)
     J  - (po)wstrzyknij autopot.dll = picie BEZ fokusu (wymaga build.bat: dll + inject.exe).
          Bez DLL dziala stara sciezka SendInput - tylko gdy gra jest aktywnym oknem.
     data/potion_vnums.txt - wpisz vnum mikstury -> picie WPROST z ekwipunku (skan, ignoruje pasek,
@@ -99,9 +100,12 @@ CANVAS = 720
 RESCAN_SEC = 1.5    # okres skanu pamieci w tle (nowe moby/metiny); sam skan ~0.2 s
 # Auto-mikstura (recon/autopot.py): HP z CPythonPlayer, "nacisniecie" slotu w oknie gry.
 PLAYER_CLASS = "CPythonPlayer"
-POTION_KEY = "1"          # slot paska z czerwonymi miksturami
-POTION_THRESHOLD = 50     # % HP, ponizej ktorego pijemy (zmiana: [ / ])
-POTION_COOLDOWN = 1.5     # s miedzy miksturami (zeby nie wypic kilku na raz przed leczeniem)
+POTION_KEY = "1"          # slot paska z czerwonymi miksturami (gdy nie uzywamy vnum)
+# Histereza: zaczynamy pic ponizej LOW, lejemy az HP dojdzie do HIGH (HIGH >= LOW).
+POTION_LOW = 50           # % HP - zacznij pic ponizej (suwak "Pij <", klawisze [ / ])
+POTION_HIGH = 75          # % HP - lej az do tego poziomu (suwak "Lecz do")
+POTION_COOLDOWN = 0.3     # s - min. odstep miedzy miksturami (suwak "Odstep")
+POTION_POLL = 0.07        # s - jak czesto dedykowana petla sprawdza HP (szybka reakcja, nie co klatke)
 # Picie wprost z ekwipunku: vnum mikstur w data/potion_vnums.txt (edytowalny w locie).
 # Pusty plik -> picie slotem paska (POTION_KEY). Lista vnum -> skan EQ (net.SendItemUsePacket):
 # ignoruje pasek i przezywa przesuniecie stacka. Vnum podejrzysz przez recon/inv_dump.py.
@@ -251,9 +255,15 @@ class RadarMap:
         self.points_addr = None           # odszyfrowywana tablica punktow (HP @[5], max @[6])
         self.hwnd = autopot.game_window(self.pm.process_id)
         self.autopot_on = True
-        self.pot_threshold = POTION_THRESHOLD
+        self.pot_low = POTION_LOW                 # zacznij pic ponizej
+        self.pot_high = max(POTION_HIGH, POTION_LOW)   # lej do (>= low)
+        self.pot_cd = POTION_COOLDOWN
+        self._healing = False                     # stan histerezy (miedzy low a high)
         self._last_pot = 0.0
         self.pot_count = 0
+        self._hp = self._mhp = 0                  # ostatnio odczytane HP (do rysowania)
+        self._pct = 0.0
+        self._pts_valid = False
         # picie bez fokusu: wstrzykujemy autopot.dll i gadamy z nim przez potok (recon/autopot.py).
         # Gdy sie nie uda (brak DLL / nie zbudowany) - zostaje stara sciezka SendInput (tylko z fokusem).
         self.pipe = autopot.PipeDrinker()
@@ -264,23 +274,29 @@ class RadarMap:
         self._reload_pot_vnums()
 
         self.root = root
-        # pasek sterowania auto-miksturą (checkbox + suwak); klawisze [H] [ / ] dziala dalej i sa
-        # z nim zsynchronizowane. Zmienne tk sa tylko "lustrem" - zrodlem prawdy zostaja
-        # self.autopot_on / self.pot_threshold, ktore czyta _autopot_tick.
+        # pasek sterowania auto-miksturą: checkbox + 3 suwaki (pij ponizej / lecz do / odstep).
+        # Klawisze [H] [ / ] dzialaja dalej i sa zsynchronizowane; zmienne tk to "lustro" -
+        # zrodlem prawdy zostaja self.autopot_on / self.pot_low / self.pot_high / self.pot_cd.
         self.autopot_var = tk.BooleanVar(value=self.autopot_on)
-        self.thr_var = tk.IntVar(value=self.pot_threshold)
+        self.low_var = tk.IntVar(value=self.pot_low)
+        self.high_var = tk.IntVar(value=self.pot_high)
+        self.cd_var = tk.DoubleVar(value=self.pot_cd)
         bar = tk.Frame(root, bg="#0b0f0b")
         bar.pack(side="top", fill="x")
         tk.Checkbutton(bar, text="Auto-mikstura", variable=self.autopot_var,
                        command=self._on_autopot_check, bg="#0b0f0b", fg="#9fe7a6",
                        selectcolor="#1b2a1b", activebackground="#0b0f0b", activeforeground="#cdebcf",
                        font=("Consolas", 9)).pack(side="left", padx=6, pady=2)
-        tk.Label(bar, text="Prog HP:", bg="#0b0f0b", fg="#9fe7a6",
-                 font=("Consolas", 9)).pack(side="left")
-        tk.Scale(bar, from_=5, to=95, resolution=5, orient="horizontal", length=220,
-                 variable=self.thr_var, command=self._on_thr_slider, bg="#0b0f0b", fg="#ffe14d",
-                 troughcolor="#222", highlightthickness=0, font=("Consolas", 8)).pack(side="left", padx=6)
-        tk.Label(bar, text="%", bg="#0b0f0b", fg="#9fe7a6", font=("Consolas", 9)).pack(side="left")
+
+        def _mkscale(lbl, var, lo, hi, res, cmd, fg, length=140):
+            tk.Label(bar, text=lbl, bg="#0b0f0b", fg="#9fe7a6", font=("Consolas", 9)).pack(side="left")
+            tk.Scale(bar, from_=lo, to=hi, resolution=res, orient="horizontal", length=length,
+                     variable=var, command=cmd, bg="#0b0f0b", fg=fg, troughcolor="#222",
+                     highlightthickness=0, font=("Consolas", 8)).pack(side="left", padx=2)
+
+        _mkscale("Pij <%", self.low_var, 5, 95, 1, self._on_low, "#ffe14d")
+        _mkscale("Lecz do %", self.high_var, 5, 99, 1, self._on_high, "#4da6ff")
+        _mkscale("Odstep s", self.cd_var, 0.1, 1.0, 0.05, self._on_cd, "#cdebcf", 110)
 
         self.canvas = tk.Canvas(root, width=CANVAS, height=CANVAS, bg="#0b0f0b", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
@@ -307,6 +323,8 @@ class RadarMap:
         # skan w tle: bez niego metiny/moby, ktore pojawily sie po starcie, nigdy nie trafialy
         # na liste (rescan tylko przy starcie i na [R]). rescan podmienia listy na koncu (atomowo).
         threading.Thread(target=self._rescan_loop, daemon=True).start()
+        # osobna, szybka petla auto-mikstury (reakcja ~POTION_POLL, niezaleznie od rysowania)
+        threading.Thread(target=self._autopot_loop, daemon=True).start()
         self.tick()
 
     def _rescan_loop(self):
@@ -350,8 +368,20 @@ class RadarMap:
     def _on_autopot_check(self):
         self.autopot_on = bool(self.autopot_var.get())
 
-    def _on_thr_slider(self, val):
-        self.pot_threshold = int(float(val))
+    def _on_low(self, val):
+        self.pot_low = int(float(val))
+        if self.pot_high < self.pot_low:          # cel nie moze byc ponizej progu startu
+            self.pot_high = self.pot_low
+            self.high_var.set(self.pot_high)
+
+    def _on_high(self, val):
+        self.pot_high = int(float(val))
+        if self.pot_high < self.pot_low:
+            self.pot_low = self.pot_high
+            self.low_var.set(self.pot_low)
+
+    def _on_cd(self, val):
+        self.pot_cd = float(val)
 
     def _inject_dll(self):
         """Wstrzykuje autopot.dll (picie bez fokusu) i laczy potok. Zwraca krotki opis stanu."""
@@ -639,11 +669,9 @@ class RadarMap:
         elif k == "j":
             self.dll_status = self._inject_dll()
         elif k == "bracketleft":
-            self.pot_threshold = max(5, self.pot_threshold - 5)
-            self.thr_var.set(self.pot_threshold)        # odbij w suwaku
+            self.low_var.set(max(5, self.pot_low - 5))   # triggers _on_low (ustawia prog + clamp)
         elif k == "bracketright":
-            self.pot_threshold = min(95, self.pot_threshold + 5)
-            self.thr_var.set(self.pot_threshold)
+            self.low_var.set(min(95, self.pot_low + 5))
         elif k == "k":
             self.calibrate()
         elif k == "r":
@@ -742,12 +770,25 @@ class RadarMap:
         c.create_rectangle(0, self.ch - 20, self.cw, self.ch, fill="#0b0f0b", outline="")
         c.create_text(8, self.ch - 10, anchor="w", fill="#9fe7a6", text=info, font=("Consolas", 8))
 
-        self._autopot_tick(c)
+        self._autopot_draw(c)
         self.root.after(120, self.tick)
 
-    def _autopot_tick(self, c):
-        """Odczyt HP, ewentualne uzycie mikstury i pasek HP w lewym gornym rogu."""
+    # ---------- auto-mikstura: szybka petla (decyzja) + rysowanie (z cache) ----------
+    def _autopot_loop(self):
+        """Dedykowana petla: czyta HP i pije co POTION_POLL (szybka reakcja, niezaleznie od rysowania,
+        ktore chodzi co 120 ms). Dzieki temu lek leci zaraz po spadku HP, a nie raz na klatke/1.5 s."""
+        while True:
+            time.sleep(POTION_POLL)
+            try:
+                self._autopot_step()
+            except Exception as e:
+                print("[mikstura] blad petli:", e)
+
+    def _autopot_step(self):
+        """Jeden krok: odczyt HP, histereza (pij<low, lej do high), ewentualne picie. Zapisuje
+        ostatnie HP do cache dla rysowania."""
         if self.points_addr is None:
+            self._pts_valid = False
             return
         try:
             pts = autopot.read_points(self.pm, self.points_addr, 16)
@@ -757,47 +798,63 @@ class RadarMap:
             # np. przelogowanie postaci - porzucamy adres, rescan poszuka tablicy od nowa
             print("[hp] punkty przestaly pasowac - szukam tablicy ponownie")
             self.points_addr = None
+            self._pts_valid = False
             return
         hp, mhp = pts[autopot.P_HP], pts[autopot.P_MAX_HP]
-        pct = 100.0 * hp / mhp
+        self._hp, self._mhp, self._pct, self._pts_valid = hp, mhp, 100.0 * hp / mhp, True
+        pct = self._pct
+        # histereza: zacznij ponizej low, przestan dopiero po dojsciu do high
+        if hp <= 0:                       # martwy - nie pijemy (i tak nie zadziala, marnuje mikstury)
+            self._healing = False
+            return
+        if pct < self.pot_low:
+            self._healing = True
+        elif pct >= self.pot_high:
+            self._healing = False
+        if not (self.autopot_on and self._healing):
+            return
         now = time.time()
-        # hp <= 0 = martwy: nie pijemy (i tak nie zadziala, a zuzywa mikstury)
-        need = self.autopot_on and 0 < hp and pct < self.pot_threshold
-        if need and now - self._last_pot >= POTION_COOLDOWN:
-            slot = int(POTION_KEY) - 1 if POTION_KEY.isdigit() else 0   # "1" -> indeks 0
-            via = None
-            if self.pot_vnums:
-                if autopot.drink_by_vnum(self.pot_vnums):      # skan EQ: ignoruje pasek, bez fokusu
-                    via = "EQ"
-            elif self.pipe.drink(slot):                        # slot paska przez DLL, bez fokusu
-                via = "slot"
-            if via is None and self.hwnd and autopot.press_key(self.hwnd, POTION_KEY):  # zapas: fokus
-                via = "klawisz"
-            if via:
-                self._last_pot = now
-                self.pot_count += 1
-                print("[mikstura] HP %d/%d (%.0f%%) -> %s" % (hp, mhp, pct, via))
+        if now - self._last_pot < self.pot_cd:
+            return
+        slot = int(POTION_KEY) - 1 if POTION_KEY.isdigit() else 0   # "1" -> indeks 0
+        via = None
+        if self.pot_vnums:
+            if autopot.drink_by_vnum(self.pot_vnums):      # skan EQ: ignoruje pasek, bez fokusu
+                via = "EQ"
+        elif self.pipe.drink(slot):                        # slot paska przez DLL, bez fokusu
+            via = "slot"
+        if via is None and self.hwnd and autopot.press_key(self.hwnd, POTION_KEY):  # zapas: fokus
+            via = "klawisz"
+        if via:
+            self._last_pot = now
+            self.pot_count += 1
+            print("[mikstura] HP %d/%d (%.0f%%) -> %s" % (hp, mhp, pct, via))
+
+    def _autopot_draw(self, c):
+        """Pasek HP z dwiema liniami (pij<low zolta, lecz do high niebieska) + status. Z cache."""
+        if not self._pts_valid or self._mhp <= 0:
+            return
+        hp, mhp, pct = self._hp, self._mhp, self._pct
         w = 180
         c.create_rectangle(2, 2, 560, 41, fill="#0b0f0b", outline="")     # tlo dla czytelnosci
         c.create_rectangle(8, 8, 8 + w, 22, fill="#300", outline="#000")
         c.create_rectangle(8, 8, 8 + w * max(0.0, min(1.0, hp / mhp)), 22, fill="#d22", outline="")
-        c.create_line(8 + w * self.pot_threshold / 100, 6, 8 + w * self.pot_threshold / 100, 24,
-                      fill="#ffe14d", width=2)
+        c.create_line(8 + w * self.pot_low / 100.0, 6, 8 + w * self.pot_low / 100.0, 24,
+                      fill="#ffe14d", width=2)                            # pij ponizej
+        c.create_line(8 + w * self.pot_high / 100.0, 6, 8 + w * self.pot_high / 100.0, 24,
+                      fill="#4da6ff", width=2)                            # lecz do
         c.create_text(8 + w / 2, 15, fill="#fff", text="HP %d/%d (%.0f%%)" % (hp, mhp, pct),
                       font=("Consolas", 8, "bold"))
-        state = ("WL <%d%%  uzyto: %d" % (self.pot_threshold, self.pot_count) if self.autopot_on
-                 else "WYL")
-        focusfree = self.dll_status.startswith("wstrzyk")
-        mode = "bez fokusu" if focusfree else "wymaga fokusu"
         method = ("EQ vnum %s" % ",".join(map(str, self.pot_vnums))) if self.pot_vnums \
             else "slot %s" % POTION_KEY
-        # ostrzezenie o braku fokusu ma sens tylko bez DLL (z DLL fokus nie jest potrzebny)
-        if (need and not focusfree and self.hwnd
-                and autopot.u32.GetForegroundWindow() != self.hwnd):
-            state += "  ! GRA NIEAKTYWNA (brak DLL)"
+        mode = "bez fokusu" if self.dll_status.startswith("wstrzyk") else "wymaga fokusu"
+        state = ("WL  uzyto:%d" % self.pot_count) if self.autopot_on else "WYL"
+        if self._healing:
+            state += " [leje]"
         c.create_text(8, 33, anchor="w", fill="#ffe14d" if self.autopot_on else "#999",
-                      text="auto-mikstura (%s, %s): %s   [H]wl/wyl [ / ]prog [J]DLL:%s"
-                           % (method, mode, state, self.dll_status),
+                      text="mikstura %s  pij<%d%% lecz>%d%% co%.2fs  %s  %s  [J]DLL:%s"
+                           % (method, self.pot_low, self.pot_high, self.pot_cd, mode, state,
+                              self.dll_status),
                       font=("Consolas", 8))
 
 
