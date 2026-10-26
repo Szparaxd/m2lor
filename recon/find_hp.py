@@ -150,6 +150,29 @@ def mode_pair(pm, regions, hp, mhp):
     return len(hits)
 
 
+def _dump_anchor_neighbourhoods(pm, pos, occ, labelof, span=16, limit=24):
+    """Wypisuje okolice (+-span dwordow) wystapien najbardziej wyroznikowej OBECNEJ kotwicy -
+    zebym mogl recznie rozpoznac tablice postaci (ta z poziomem/statami/PM obok)."""
+    present = sorted((occ[a], a) for a in pos if occ[a] > 0)   # najmniej liczna = najbardziej unikatowa
+    if not present:
+        return
+    _, a = present[0]
+    print("\n--- Okolice wystapien kotwicy %d (%s), do %d sztuk ---"
+          % (a, labelof.get(a, "?"), limit))
+    for n, addr in enumerate(pos[a][:limit]):
+        try:
+            raw = pm.read_bytes(addr - span * 4, (2 * span + 1) * 4)
+        except Exception:
+            continue
+        u = np.frombuffer(raw[:(len(raw) // 4) * 4], dtype="<u4")
+        vals = dec(u, 0)
+        print("\n[#%d @%#010x]" % (n + 1, addr))
+        for j, val in enumerate(vals):
+            rel = j - span
+            tag = ("  <== %s" % labelof[val]) if (val in labelof and val != 0) else ""
+            print("   %+3d: %12d%s" % (rel, val, tag))
+
+
 def mode_known(pm, regions, known):
     """Lokalizuje tablice punktow po KILKU znanych wartosciach z karty postaci (vCore nieszyfrowany).
     Kotwiczy na najbardziej wyroznikowej liczbie (np. maxEXP), a potem w oknie +-48 liczy, ile innych
@@ -167,6 +190,7 @@ def mode_known(pm, regions, known):
     print("\n=== TRYB ZNANE WARTOSCI: kotwice=%s; znane=%s ==="
           % (anchor_vals, sorted(vals)))
     occ = {a: 0 for a in anchor_vals}
+    pos = {a: [] for a in anchor_vals}        # adresy wystapien (do zrzutu okolic), limit na kotwice
     results = []
     for rb, rs in regions:
         try:
@@ -179,6 +203,8 @@ def mode_known(pm, regions, known):
             occ[a] += len(idxs)
             for i in idxs:
                 i = int(i)
+                if len(pos[a]) < 60:
+                    pos[a].append(rb + i * 4)
                 lo = max(0, i - 48)
                 win = dec(u[lo:min(u.size, i + 48)], 0)
                 cnt = len(vals & set(win))
@@ -189,8 +215,10 @@ def mode_known(pm, regions, known):
         print("  %-10d %-8s : %d razy" % (a, "(%s)" % labelof.get(a, "?"), occ[a]))
     if not results:
         print("\nBrak okna z >=3 znanymi wartosciami blisko siebie.")
-        print("-> Wartosci moga byc trzymane inaczej (wymPD z tabeli; EXP jako 64-bit; inny uklad).")
-        print("-> Najpewniej: zejdz HP PONIZEJ maxHP w grze i odpal z samym --hp/--maxhp (tryb par).")
+        print("-> wymPD/EXP moga byc z tabeli lub 64-bit; ale HP jest obecne - pokazuje okolice.")
+        _dump_anchor_neighbourhoods(pm, pos, occ, labelof)
+        print("\n-> Jesli zadne okno nie wyglada na tablice postaci: zejdz HP PONIZEJ maxHP w grze")
+        print("   i odpal z --hp <aktualne> --maxhp 3886 (tryb par wskaze HP/maxHP bez pudla).")
         return
     results.sort(key=lambda r: r[0], reverse=True)
     print("\nOkien-kandydatow: %d. Najlepsze (po liczbie trafien):" % len(results))
