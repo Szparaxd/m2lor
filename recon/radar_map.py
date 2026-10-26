@@ -543,12 +543,13 @@ class RadarMap:
                 hh = np.nonzero(u == player_vt)[0]
                 if len(hh):
                     player = rb + int(hh[0]) * 4
-            if need_pts_scan and pts_cand[0] is None:
-                # najpierw plain (nieszyfrowane, np. vCore), potem XOR-run (inne buildy bez RTTI)
+            if need_pts_scan:
+                # najpierw plain (nieszyfrowane, np. vCore), potem XOR-run (inne buildy bez RTTI);
+                # trzymamy najLEPSZEGO kandydata ze WSZYSTKICH regionow (najwyzszy wynik gestosci)
                 a, rep = autopot.scan_points_plain(u, rb)
                 if a is None:
                     a, rep = autopot.scan_points_block(u, rb)
-                if a is not None:
+                if a is not None and rep > pts_cand[1]:
                     pts_cand = (a, rep)
             for h in np.nonzero(u == mob_vt)[0]:
                 mobs.append(rb + int(h) * 4)

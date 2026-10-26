@@ -115,17 +115,29 @@ def scan_points_plain(u, base):
 
     lvl, exp, nexp = c(1), c(3), c(4)
     hp, mhp, sp, msp = c(5), c(6), c(7), c(8)
+    sta, msta, gold = c(9), c(10), c(11)
     s = [c(12), c(13), c(14), c(15)]
-    mask = ((c(0) == 0) & (lvl >= 1) & (lvl <= 250)
-            & (hp >= 0) & (hp <= mhp) & (mhp >= 50) & (mhp < 2_000_000)
-            & (sp >= 0) & (sp <= msp) & (msp > 0) & (msp < 2_000_000)
-            & (nexp >= 300) & (nexp < 2**31 - 1) & (exp >= 0) & (exp < nexp))
+    # Scisly wzorzec: HP/PM/stamina maja pary biez./max, do tego PD<wymPD, zloto, 4 rozsadne staty.
+    # Luzny wzorzec lapal falszywki (0/96) - te sa "rzadkie", wiec dodatkowo wybieramy NAJGESTSZEGO.
+    mask = ((c(0) == 0) & (lvl >= 1) & (lvl <= 120)
+            & (hp >= 0) & (hp <= mhp) & (mhp >= 100) & (mhp < 2_000_000)
+            & (sp >= 0) & (sp <= msp) & (msp >= 1) & (msp < 2_000_000)
+            & (sta >= 0) & (sta <= msta) & (msta >= 1) & (msta < 2_000_000)
+            & (gold >= 0) & (gold < 2_000_000_000)
+            & (nexp >= 500) & (nexp < 2**31 - 1) & (exp >= 0) & (exp < nexp))
     for st in s:
-        mask &= (st >= 1) & (st <= 2000)
+        mask &= (st >= 1) & (st <= 1000)
     idx = np.nonzero(mask)[0]
     if idx.size == 0:
         return None, -1
-    return base + int(idx[0]) * 4, int(idx.size)
+    # prawdziwa tablica jest gesto wypelniona - wybierz kandydata z najwieksza liczba niezerowych pol
+    best, best_score = None, -1
+    for i in idx:
+        i = int(i)
+        score = int(np.count_nonzero(d[i + 1:i + 24]))
+        if score > best_score:
+            best, best_score = i, score
+    return base + best * 4, best_score
 
 
 def read_points(pm, addr, count=9):
