@@ -87,46 +87,57 @@ def explain_points(d):
 
 
 def mode_pair(pm, regions, hp, mhp):
+    """Szuka dwordow X, Y odleglych o 'gap' (1..3), gdzie X^Y == hp^mhp. Przy szyfrowaniu stalym
+    kluczem klucz sie skraca, wiec dziala tez bez znajomosci klucza. Dla vCore (bez szyfrowania)
+    prawdziwa para ma KLUCZ=0. Zbiera trafienia i wypisuje okolice; key=0 na gorze."""
     target = (hp ^ mhp) & 0xFFFFFFFF
-    print("\n=== TRYB PARA HP: szukam sasiednich dwordow z XOR == %#010x (= %d ^ %d) ===" % (target, hp, mhp))
-    hits = 0
+    print("\n=== TRYB PARA HP: szukam X,Y (odstep 1-3) z X^Y == %#010x (= %d ^ %d) ==="
+          % (target, hp, mhp))
+    hits = []       # (key, gap, order, addr, window_decoded, base_rel)
     for rb, rs in regions:
         try:
             buf = pm.read_bytes(rb, rs)
         except Exception:
             continue
         u = np.frombuffer(buf[:(len(buf) // 4) * 4], dtype="<u4")
-        if u.size < 2:
+        if u.size < 4:
             continue
-        xorpairs = u[:-1] ^ u[1:]
-        idxs = np.nonzero(xorpairs == np.uint32(target))[0]
-        for i in idxs:
-            i = int(i)
-            a, b = int(u[i]), int(u[i + 1])
-            # para moze byc (HP,maxHP) albo (maxHP,HP)
-            for order, (va, vb) in (("HP,maxHP", (hp, mhp)), ("maxHP,HP", (mhp, hp))):
-                key = a ^ va
-                if (b ^ key) != vb:
-                    continue
-                hits += 1
-                addr = rb + i * 4
-                print("\n[HIT #%d] adres pary: %#010x  kolejnosc=%s  KLUCZ=%#010x" % (hits, addr, order, key))
-                lo = max(0, i - 20)
-                window = dec(u[lo:i + 24], key)
-                base_idx = lo - i   # indeks wzgledny pierwszego elementu okna
-                # wypisz okno z indeksami wzglednymi wzgledem pozycji 'a'
-                for j, val in enumerate(window):
-                    rel = base_idx + j
-                    mark = "  <-- a (%s[0])" % order.split(",")[0] if rel == 0 else (
-                        "  <-- b" if rel == 1 else "")
-                    if -16 <= rel <= 18:
-                        print("    rel %+3d : %12d%s" % (rel, val, mark))
-                if hits >= 6:
-                    print("\n(...wiecej trafien pominieto)")
-                    return hits
+        for gap in (1, 2, 3):
+            idxs = np.nonzero((u[:-gap] ^ u[gap:]) == np.uint32(target))[0]
+            for i in idxs:
+                i = int(i)
+                a = int(u[i])
+                # a moze byc HP albo maxHP; klucz wylicza sie z zalozenia, ktore to
+                for order, va in (("HP,maxHP", hp), ("maxHP,HP", mhp)):
+                    key = a ^ va
+                    lo = max(0, i - 20)
+                    window = dec(u[lo:i + 24], key)
+                    hits.append((key, gap, order, rb + i * 4, window, lo - i))
     if not hits:
-        print("Brak trafien. Czy HP/maxHP sa dokladne i aktualne? Sprobuj tez tryb ksztaltu (bez --hp).")
-    return hits
+        print("Brak trafien. Czy HP/maxHP sa DOKLADNE i aktualne (po buffach/zdjeciu HP+)?")
+        print("Sprobuj tez: python recon/find_hp.py -e <exe> --hp H --maxhp M --shape")
+        return 0
+    # key=0 najpierw (vCore nieszyfrowany), potem mniejsze klucze; ogranicz wydruk
+    hits.sort(key=lambda h: (h[0] != 0, h[0]))
+    print("Trafien: %d. Najbardziej prawdopodobne (key=0 = brak szyfrowania):" % len(hits))
+    seen = set()
+    shown = 0
+    for key, gap, order, addr, window, base in hits:
+        if addr in seen:        # ta sama para pod dwoma 'order' - pokaz raz
+            continue
+        seen.add(addr)
+        print("\n[HIT] addr=%#010x  gap=%d  zalozenie=%s  KLUCZ=%#010x" % (addr, gap, order, key))
+        for j, val in enumerate(window):
+            rel = base + j
+            if -16 <= rel <= 18:
+                mark = "  <== X (%s)" % order.split(",")[0] if rel == 0 else (
+                    "  <== Y (+%d)" % gap if rel == gap else "")
+                print("    rel %+3d : %12d%s" % (rel, val, mark))
+        shown += 1
+        if shown >= 10:
+            print("\n(...wiecej trafien pominieto; patrz plik logu)")
+            break
+    return len(hits)
 
 
 def mode_shape(pm, regions, min_run):
@@ -167,32 +178,63 @@ def mode_shape(pm, regions, min_run):
         print("Zero kandydatow - moze inne szyfrowanie/brak dlugiego runu. Uzyj --hp/--maxhp.")
 
 
+class _Tee:
+    """Pisze jednoczesnie na ekran i do pliku - zeby nie trzeba bylo przeklejac wynikow."""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, s):
+        for st in self.streams:
+            st.write(s)
+
+    def flush(self):
+        for st in self.streams:
+            st.flush()
+
+
+LOG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "logs", "find_hp.txt")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Diagnostyka HP (Metin2).")
     ap.add_argument("-e", "--exe", "-exe", default="GameCoreTop.exe")
     ap.add_argument("--hp", type=int, default=None, help="aktualne HP z gry")
     ap.add_argument("--maxhp", type=int, default=None, help="aktualne maxHP z gry")
     ap.add_argument("--min-run", type=int, default=16, help="min. dlugosc runu klucza (tryb ksztalt)")
+    ap.add_argument("--shape", action="store_true", help="wymus tryb ksztalt nawet z --hp")
     args = ap.parse_args()
     if not args.exe.lower().endswith(".exe"):
         args.exe += ".exe"
+
+    logf = open(LOG_PATH, "w", encoding="utf-8")
+    sys.stdout = _Tee(sys.__stdout__, logf)
     try:
-        pm = pymem.Pymem(args.exe)
-    except pymem.exception.ProcessNotFound:
-        print("[!] Nie ma procesu %s (gra wlaczona? -e NAZWA)" % args.exe)
-        return
-    except pymem.exception.CouldNotOpenProcess:
-        print("[!] Uruchom terminal JAKO ADMINISTRATOR.")
-        return
-    regions = writable_regions(pm.process_handle)
-    total = sum(s for _, s in regions)
-    print("Proces %s (PID %d): %d regionow zapisywalnych, razem %.1f MB"
-          % (args.exe, pm.process_id, len(regions), total / 1048576.0))
-    if args.hp is not None and args.maxhp is not None:
-        mode_pair(pm, regions, args.hp, args.maxhp)
-    else:
-        print("(bez --hp/--maxhp -> tylko tryb ksztalt; dla pewnosci podaj HP i maxHP z gry)")
-    mode_shape(pm, regions, args.min_run)
+        print("[wynik zapisywany do %s]" % LOG_PATH)
+        try:
+            pm = pymem.Pymem(args.exe)
+        except pymem.exception.ProcessNotFound:
+            print("[!] Nie ma procesu %s (gra wlaczona? -e NAZWA)" % args.exe)
+            return
+        except pymem.exception.CouldNotOpenProcess:
+            print("[!] Uruchom terminal JAKO ADMINISTRATOR.")
+            return
+        regions = writable_regions(pm.process_handle)
+        total = sum(s for _, s in regions)
+        print("Proces %s (PID %d): %d regionow zapisywalnych, razem %.1f MB"
+              % (args.exe, pm.process_id, len(regions), total / 1048576.0))
+        if args.hp is not None and args.maxhp is not None:
+            mode_pair(pm, regions, args.hp, args.maxhp)
+            if args.shape:
+                mode_shape(pm, regions, args.min_run)
+        else:
+            print("(bez --hp/--maxhp -> tylko tryb ksztalt; dla pewnosci podaj HP i maxHP z gry)")
+            mode_shape(pm, regions, args.min_run)
+    finally:
+        sys.stdout = sys.__stdout__
+        logf.close()
+    print("[gotowe] pelny wynik w %s" % LOG_PATH)
 
 
 if __name__ == "__main__":
