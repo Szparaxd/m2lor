@@ -392,6 +392,93 @@ def _save_track(pm, cand):
             f.write("%d %s\n" % (addr, enc))
 
 
+def mode_watch(pm, seconds=20.0, interval=0.7, lo=50, hi=50000):
+    """Monitor na zywo: badz BITY (HP maleje), nie lecz sie. Probkuje pamiec co 'interval' i zostawia
+    adresy, ktore sie NIE zwiekszyly (int i float) - na koncu te z NETTO spadkiem to kandydaci na HP.
+    Nie trzeba znac dokladnego HP. Zakres [lo,hi] odsiewa wszechobecne male liczby."""
+    import time as _t
+    print("\n=== WATCH: dostawaj obrazenia (HP maleje), NIE lecz sie. %.0fs, co %.1fs; zakres %d..%d ==="
+          % (seconds, interval, lo, hi))
+    tracked = {}   # base -> dict(size, idx, enc, first, prev)  (enc: 0=int, 1=float)
+    for rb, rs in writable_regions(pm.process_handle):
+        try:
+            buf = pm.read_bytes(rb, rs)
+        except Exception:
+            continue
+        u = np.frombuffer(buf[:(len(buf) // 4) * 4], dtype="<u4")
+        iv = u.view(np.int32)
+        fv = u.view(np.float32)
+        im = (iv >= lo) & (iv <= hi)
+        fm = np.isfinite(fv) & (fv >= lo) & (fv <= hi)
+        idx_i = np.nonzero(im)[0]
+        idx_f = np.nonzero(fm)[0]
+        if idx_i.size + idx_f.size == 0:
+            continue
+        idx = np.concatenate([idx_i, idx_f]).astype(np.int32)
+        enc = np.concatenate([np.zeros(idx_i.size, np.uint8), np.ones(idx_f.size, np.uint8)])
+        num = np.concatenate([iv[idx_i].astype(np.float32), fv[idx_f].astype(np.float32)])
+        tracked[rb] = dict(size=rs, idx=idx, enc=enc, first=num.copy(), prev=num)
+    total = sum(t["idx"].size for t in tracked.values())
+    print("Start: %d kandydatow w %d regionach. Zaczynaj dostawac obrazenia..." % (total, len(tracked)))
+    t_end = _t.time() + seconds
+    sample = 0
+    while _t.time() < t_end:
+        _t.sleep(interval)
+        sample += 1
+        for rb in list(tracked.keys()):
+            t = tracked[rb]
+            try:
+                buf = pm.read_bytes(rb, t["size"])
+            except Exception:
+                del tracked[rb]
+                continue
+            u = np.frombuffer(buf[:(len(buf) // 4) * 4], dtype="<u4")
+            if u.size <= int(t["idx"].max()):      # region sie skurczyl - porzuc
+                del tracked[rb]
+                continue
+            iv = u.view(np.int32)
+            fv = u.view(np.float32)
+            idx = t["idx"]
+            newnum = np.where(t["enc"] == 0, iv[idx].astype(np.float32), fv[idx].astype(np.float32))
+            keep = newnum <= t["prev"]             # nie wzroslo (rowne dopuszczamy - regen/brak ciosu)
+            if not keep.all():
+                t["idx"] = idx[keep]
+                t["enc"] = t["enc"][keep]
+                t["first"] = t["first"][keep]
+                newnum = newnum[keep]
+            t["prev"] = newnum
+            if t["idx"].size == 0:
+                del tracked[rb]
+        total = sum(t["idx"].size for t in tracked.values())
+        print("  probka %d: %d kandydatow" % (sample, total))
+        if total == 0:
+            break
+    results = []
+    for rb, t in tracked.items():
+        net = t["first"] - t["prev"]
+        for n in np.nonzero(net > 0)[0]:
+            n = int(n)
+            results.append((rb + int(t["idx"][n]) * 4, "float" if t["enc"][n] else "int",
+                            float(t["first"][n]), float(t["prev"][n])))
+    results.sort(key=lambda r: r[2] - r[3], reverse=True)       # najwiekszy spadek na gorze
+    print("\n=== Kandydatow z NETTO spadkiem: %d (najwiekszy spadek pierwszy) ===" % len(results))
+    for addr, enc, f, l in results[:25]:
+        print("\n[SPADL %s] addr=%#010x  %.0f -> %.0f" % (enc, addr, f, l))
+        try:
+            win = np.frombuffer(pm.read_bytes(addr - 48, 112), dtype="<u4")
+        except Exception:
+            continue
+        for k in range(win.size):
+            raw = int(win[k])
+            ivv = struct.unpack("<i", struct.pack("<I", raw))[0]
+            fvv = struct.unpack("<f", struct.pack("<I", raw))[0]
+            fvs = (" float=%.3f" % fvv) if 1e-3 < abs(fvv) < 1e9 else ""
+            mark = "  <== TU" if k == 12 else ""
+            print("   %+3d: int=%12d%s%s" % (k - 12, ivv, fvs, mark))
+    if not results:
+        print("Zero. Moze HP roslo (lecenie/regen szybszy niz ciosy) albo poza zakresem - zwieksz --watch-hi.")
+
+
 def mode_shape(pm, regions, min_run):
     print("\n=== TRYB KSZTALT: szukam runow klucza (>=%d) i weryfikuje naglowek ===" % min_run)
     cands = []
@@ -466,6 +553,10 @@ def main():
     ap.add_argument("--track", type=int, default=None, metavar="HP",
                     help="iteracyjne zawezanie: podawaj aktualne HP kilka razy (zmieniaj HP miedzy)")
     ap.add_argument("--track-reset", action="store_true", help="zacznij zawezanie od nowa")
+    ap.add_argument("--watch", nargs="?", const=20, type=int, default=None, metavar="SEK",
+                    help="monitor na zywo: dostawaj obrazenia, zostawia malejace adresy (domyslnie 20s)")
+    ap.add_argument("--watch-lo", type=int, default=50, help="dolny prog wartosci w --watch")
+    ap.add_argument("--watch-hi", type=int, default=50000, help="gorny prog wartosci w --watch")
     ap.add_argument("--min-run", type=int, default=16, help="min. dlugosc runu klucza (tryb ksztalt)")
     ap.add_argument("--shape", action="store_true", help="wymus tryb ksztalt")
     args = ap.parse_args()
@@ -497,6 +588,10 @@ def main():
             return
         if args.track is not None:
             mode_track(pm, regions, args.track, reset=args.track_reset)
+            return
+        if args.watch is not None:
+            hi = args.watch_hi if args.maxhp is None else max(args.watch_hi, args.maxhp + 100)
+            mode_watch(pm, seconds=args.watch, lo=args.watch_lo, hi=hi)
             return
 
         known = {"poziom": args.level, "PD": args.exp, "wymPD": args.maxexp,
