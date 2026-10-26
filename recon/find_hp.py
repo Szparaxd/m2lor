@@ -93,7 +93,12 @@ def mode_pair(pm, regions, hp, mhp):
     target = (hp ^ mhp) & 0xFFFFFFFF
     print("\n=== TRYB PARA HP: szukam X,Y (odstep 1-3) z X^Y == %#010x (= %d ^ %d) ==="
           % (target, hp, mhp))
+    if target == 0:
+        print("HP == maxHP -> XOR par = 0, pasuje KAZDA rowna para (miliony). Pominieto.")
+        print("Uzyj trybu znanych wartosci (--exp/--maxexp...) albo zejdz HP ponizej maxHP.")
+        return 0
     hits = []       # (key, gap, order, addr, window_decoded, base_rel)
+    _CAP = 4000     # bezpiecznik: nie zbieraj w nieskonczonosc
     for rb, rs in regions:
         try:
             buf = pm.read_bytes(rb, rs)
@@ -113,6 +118,11 @@ def mode_pair(pm, regions, hp, mhp):
                     lo = max(0, i - 20)
                     window = dec(u[lo:i + 24], key)
                     hits.append((key, gap, order, rb + i * 4, window, lo - i))
+            if len(hits) >= _CAP:
+                print("(osiagnieto limit %d trafien - przerywam skan)" % _CAP)
+                break
+        if len(hits) >= _CAP:
+            break
     if not hits:
         print("Brak trafien. Czy HP/maxHP sa DOKLADNE i aktualne (po buffach/zdjeciu HP+)?")
         print("Sprobuj tez: python recon/find_hp.py -e <exe> --hp H --maxhp M --shape")
@@ -138,6 +148,55 @@ def mode_pair(pm, regions, hp, mhp):
             print("\n(...wiecej trafien pominieto; patrz plik logu)")
             break
     return len(hits)
+
+
+def mode_known(pm, regions, known):
+    """Lokalizuje tablice punktow po KILKU znanych wartosciach z karty postaci (vCore nieszyfrowany).
+    Kotwiczy na najbardziej wyroznikowej liczbie (np. maxEXP), a potem w oknie +-48 liczy, ile innych
+    znanych wartosci tam lezy. Okno z najwieksza liczba trafien = tablica punktow. Wypisuje je z
+    indeksami wzglednymi i etykietami -> widac prawdziwy uklad POINT_ tego klienta."""
+    items = [(l, v) for l, v in known.items() if v is not None]
+    vals = set(v for _, v in items)
+    labelof = {}
+    for l, v in items:
+        labelof.setdefault(v, l)
+    anchors = sorted([(abs(v), v, l) for l, v in items if abs(v) > 5000], reverse=True)
+    if not anchors:
+        anchors = sorted([(abs(v), v, l) for l, v in items if abs(v) > 100], reverse=True)
+    if not anchors:
+        print("Brak wyroznikowej wartosci - podaj --exp i --maxexp (duze liczby).")
+        return
+    _, anchor_val, anchor_label = anchors[0]
+    print("\n=== TRYB ZNANE WARTOSCI: kotwica %s=%d; znane=%s ==="
+          % (anchor_label, anchor_val, sorted(vals)))
+    av = np.uint32(anchor_val & 0xFFFFFFFF)
+    results = []
+    for rb, rs in regions:
+        try:
+            buf = pm.read_bytes(rb, rs)
+        except Exception:
+            continue
+        u = np.frombuffer(buf[:(len(buf) // 4) * 4], dtype="<u4")
+        for i in np.nonzero(u == av)[0]:
+            i = int(i)
+            lo = max(0, i - 48)
+            hi = min(u.size, i + 48)
+            win = dec(u[lo:hi], 0)
+            cnt = len(vals & set(win))
+            if cnt >= 3:
+                results.append((cnt, rb + i * 4, lo - i, win))
+    results.sort(key=lambda r: r[0], reverse=True)
+    if not results:
+        print("Nie znalazlem okna z kotwica i >=3 znanymi wartosciami. Czy liczby sa DOKLADNE?")
+        return
+    print("Okien-kandydatow: %d. Najlepsze:" % len(results))
+    for cnt, addr, base, win in results[:5]:
+        print("\n[OKNO] addr(kotwicy)=%#010x  trafien znanych=%d/%d" % (addr, cnt, len(vals)))
+        for j, val in enumerate(win):
+            rel = base + j
+            if -24 <= rel <= 28:
+                tag = ("  <== %s" % labelof[val]) if (val in labelof and val != 0) else ""
+                print("    rel %+3d : %12d%s" % (rel, val, tag))
 
 
 def mode_shape(pm, regions, min_run):
@@ -202,8 +261,13 @@ def main():
     ap.add_argument("-e", "--exe", "-exe", default="GameCoreTop.exe")
     ap.add_argument("--hp", type=int, default=None, help="aktualne HP z gry")
     ap.add_argument("--maxhp", type=int, default=None, help="aktualne maxHP z gry")
+    ap.add_argument("--level", type=int, default=None, help="poziom")
+    ap.add_argument("--exp", type=int, default=None, help="aktualne PD (EXP)")
+    ap.add_argument("--maxexp", type=int, default=None, help="wymagane PD (EXP do nast. poziomu)")
+    ap.add_argument("--sp", type=int, default=None, help="aktualne PM/mana")
+    ap.add_argument("--maxsp", type=int, default=None, help="maks. PM/mana")
     ap.add_argument("--min-run", type=int, default=16, help="min. dlugosc runu klucza (tryb ksztalt)")
-    ap.add_argument("--shape", action="store_true", help="wymus tryb ksztalt nawet z --hp")
+    ap.add_argument("--shape", action="store_true", help="wymus tryb ksztalt")
     args = ap.parse_args()
     if not args.exe.lower().endswith(".exe"):
         args.exe += ".exe"
@@ -224,12 +288,22 @@ def main():
         total = sum(s for _, s in regions)
         print("Proces %s (PID %d): %d regionow zapisywalnych, razem %.1f MB"
               % (args.exe, pm.process_id, len(regions), total / 1048576.0))
-        if args.hp is not None and args.maxhp is not None:
+        known = {"poziom": args.level, "PD": args.exp, "wymPD": args.maxexp,
+                 "HP": args.hp, "maxHP": args.maxhp, "PM": args.sp, "maxPM": args.maxsp}
+        n_known = sum(1 for v in known.values() if v is not None)
+        did = False
+        # 1) najlepszy: kilka znanych wartosci (dziala tez gdy HP==maxHP)
+        if n_known >= 3 and (args.exp is not None or args.maxexp is not None or args.level is not None):
+            mode_known(pm, regions, known)
+            did = True
+        # 2) para HP (gdy HP != maxHP)
+        if args.hp is not None and args.maxhp is not None and args.hp != args.maxhp:
             mode_pair(pm, regions, args.hp, args.maxhp)
-            if args.shape:
-                mode_shape(pm, regions, args.min_run)
-        else:
-            print("(bez --hp/--maxhp -> tylko tryb ksztalt; dla pewnosci podaj HP i maxHP z gry)")
+            did = True
+        # 3) ostatecznosc: ksztalt
+        if args.shape or not did:
+            if not did:
+                print("(za malo danych - podaj np. --level --exp --maxexp --hp --maxhp; wlaczam ksztalt)")
             mode_shape(pm, regions, args.min_run)
     finally:
         sys.stdout = sys.__stdout__
