@@ -94,13 +94,14 @@ def f32bits(x):
 def mode_pair(pm, regions, hp, mhp):
     """Szuka HP obok maxHP (odstep 1-3), próbujac obu kodowan: int32 i float32. Dla vCore
     (nieszyfrowane) to pewny sposob - o ile HP != maxHP. Wypisuje okolice w obu interpretacjach."""
-    print("\n=== TRYB PARA HP (int + float): HP=%d  maxHP=%d ===" % (hp, mhp))
+    print("\n=== TRYB PARA HP (int+float, okno +-8, tez wymieszane): HP=%d  maxHP=%d ===" % (hp, mhp))
     if hp == mhp:
         print("HP == maxHP -> nie da sie odroznic pary. Daj sie TRAFIC (HP < maxHP) i podaj --hp aktualne.")
         return 0
-    encs = [("int", hp & 0xFFFFFFFF, mhp & 0xFFFFFFFF),
-            ("float", f32bits(hp), f32bits(mhp))]
+    enc_hp = [("int", hp & 0xFFFFFFFF), ("float", f32bits(hp))]
+    enc_mhp = [("int", mhp & 0xFFFFFFFF), ("float", f32bits(mhp))]
     hits = 0
+    seen = set()
     for rb, rs in regions:
         try:
             buf = pm.read_bytes(rb, rs)
@@ -108,18 +109,24 @@ def mode_pair(pm, regions, hp, mhp):
             continue
         u = np.frombuffer(buf[:(len(buf) // 4) * 4], dtype="<u4")
         n = u.size
-        for label, A, B in encs:
-            for i in np.nonzero(u == np.uint32(A))[0]:
-                i = int(i)
-                for g in (1, 2, 3):
-                    j = i + g
-                    if j < n and int(u[j]) == B:
-                        hits += 1
+        # pozycje HP (w dowolnym kodowaniu)
+        hp_pos = {}
+        for lbl, V in enc_hp:
+            for i in np.nonzero(u == np.uint32(V))[0]:
+                hp_pos[int(i)] = lbl
+        for i, lbl in hp_pos.items():
+            lo = max(0, i - 8)
+            hi = min(n, i + 9)
+            for lbl2, V2 in enc_mhp:
+                for j in range(lo, hi):
+                    if j != i and int(u[j]) == V2:
                         addr = rb + i * 4
-                        print("\n[HIT %s] HP@%#010x  maxHP@+%d dword (gap=%d)" % (label, addr, g, g))
-                        lo = max(0, i - 16)
-                        hi = min(n, i + 20)
-                        for kk in range(lo, hi):
+                        if addr in seen:
+                            continue
+                        seen.add(addr)
+                        hits += 1
+                        print("\n[HIT] HP@%#010x (%s)  maxHP %+d dword (%s)" % (addr, lbl, j - i, lbl2))
+                        for kk in range(max(0, i - 16), min(n, i + 20)):
                             raw = int(u[kk])
                             iv = struct.unpack("<i", struct.pack("<I", raw))[0]
                             fv = struct.unpack("<f", struct.pack("<I", raw))[0]
@@ -129,10 +136,8 @@ def mode_pair(pm, regions, hp, mhp):
                         if hits >= 15:
                             print("\n(limit trafien - patrz plik)")
                             return hits
-                        break
     if not hits:
-        print("Brak pary HP/maxHP (int ani float). Czy HP i maxHP sa DOKLADNE i ROZNE?")
-        print("Jesli HP jest float z ulamkiem, podaj zaokraglone - sprobuje tez sasiedztwo.")
+        print("Brak pary HP/maxHP (int ani float, okno +-8). Czy HP i maxHP sa DOKLADNE i ROZNE?")
     return hits
 
 
