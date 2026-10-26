@@ -223,6 +223,7 @@ def writable_regions(handle):
 class RadarMap:
     def __init__(self, root, map_name=None, process=DEFAULT_PROCESS):
         self.pm = pymem.Pymem(process)
+        self.proc_name = process
         mod = pymem.process.module_from_name(self.pm.process_handle, process)
         self.base = mod.lpBaseOfDll
         self.mod_lo = mod.lpBaseOfDll
@@ -264,6 +265,7 @@ class RadarMap:
         self._hp = self._mhp = 0                  # ostatnio odczytane HP (do rysowania)
         self._pct = 0.0
         self._pts_valid = False
+        self._hp_scan_warned = False              # zeby nie spamowac logiem co rescan
         # picie bez fokusu: wstrzykujemy autopot.dll i gadamy z nim przez potok (recon/autopot.py).
         # Gdy sie nie uda (brak DLL / nie zbudowany) - zostaje stara sciezka SendInput (tylko z fokusem).
         self.pipe = autopot.PipeDrinker(self.pm.process_id)   # potok per-instancja (po PID)
@@ -562,8 +564,14 @@ class RadarMap:
                                                  else "nie znaleziona"))
         elif need_pts_scan and pts_cand[0] is not None:
             self.points_addr = pts_cand[0]
+            self._hp_scan_warned = False
             print("[hp] tablica punktow (skan bez RTTI): 0x%X (powt. klucza %d)"
                   % (pts_cand[0], pts_cand[1]))
+        elif need_pts_scan and not self._hp_scan_warned:
+            self._hp_scan_warned = True
+            print("[hp] skan bez RTTI nie znalazl tablicy punktow (inny uklad POINT_?). "
+                  "Diagnoza z gry: python recon/find_hp.py -e %s --hp <HP> --maxhp <maxHP>"
+                  % self.proc_name.replace(".exe", ""))
         self.mobs = mobs
         self.effs = effs
         self.metins = metins
