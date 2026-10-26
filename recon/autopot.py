@@ -99,6 +99,35 @@ def scan_points_block(u, base):
     return (base + best * 4, best_rep) if best is not None else (None, -1)
 
 
+def scan_points_plain(u, base):
+    """Lokalizuje tablice punktow NIESZYFROWANA (klucz=0), np. w vCore. Wektorowo sprawdza uklad
+    POINT_ (ten sam, co u nas: [0]=0, poziom@1, PD@3, wymPD@4, HP@5, maxHP@6, PM@7, maxPM@8,
+    staty@12-15). Zwraca (addr, liczba_kandydatow) albo (None, -1). HP czytamy potem read_points
+    (klucz=raw[0]=0 -> plain)."""
+    n = u.shape[0]
+    if n < 48:
+        return None, -1
+    d = u.view(np.int32)
+    m = n - 31
+
+    def c(off):
+        return d[off:off + m]
+
+    lvl, exp, nexp = c(1), c(3), c(4)
+    hp, mhp, sp, msp = c(5), c(6), c(7), c(8)
+    s = [c(12), c(13), c(14), c(15)]
+    mask = ((c(0) == 0) & (lvl >= 1) & (lvl <= 250)
+            & (hp >= 0) & (hp <= mhp) & (mhp >= 50) & (mhp < 2_000_000)
+            & (sp >= 0) & (sp <= msp) & (msp > 0) & (msp < 2_000_000)
+            & (nexp >= 300) & (nexp < 2**31 - 1) & (exp >= 0) & (exp < nexp))
+    for st in s:
+        mask &= (st >= 1) & (st <= 2000)
+    idx = np.nonzero(mask)[0]
+    if idx.size == 0:
+        return None, -1
+    return base + int(idx[0]) * 4, int(idx.size)
+
+
 def read_points(pm, addr, count=9):
     """Odszyfrowane punkty [0..count) spod adresu tablicy (klucz = raw[0])."""
     raw = struct.unpack("<%dI" % count, pm.read_bytes(addr, 4 * count))
@@ -342,6 +371,30 @@ try:
 finally:
     f.close()
 '''
+
+
+def dll_executes(pid, timeout=2.0):
+    """Sprawdza, czy DLL FAKTYCZNIE wykonuje komendy (niektore klienty, np. vCore, nie opruzniaja
+    kolejki Py_AddPendingCall - komenda dociera, ale nigdy sie nie wykonuje). Wysyla canary piszacy
+    plik; True gdy plik powstal. Decyduje, czy picie przez DLL (bez fokusu) ma sens."""
+    canary = os.path.join(os.path.dirname(INV_DUMP_PATH), "dll_canary_%d.txt" % pid)
+    try:
+        if os.path.exists(canary):
+            os.remove(canary)
+    except OSError:
+        pass
+    if not send_command(pid, 'open(r"%s","w").write("ok")' % canary):
+        return False
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if os.path.exists(canary):
+            try:
+                os.remove(canary)
+            except OSError:
+                pass
+            return True
+        time.sleep(0.1)
+    return False
 
 
 def dump_inventory(pid, timeout=3.0):

@@ -64,20 +64,37 @@ static PFN_GILRelease      p_GILRelease      = NULL;
 
 static void log_dbg(const char *s) { OutputDebugStringA(s); }
 
-// Wywolywane przez GLOWNY watek gry (trzyma GIL). Tu dopiero wolno dotykac Pythona.
-// arg = kopia skryptu (malloc w queue_script) - wykonujemy i zwalniamy.
+// Wywolanie na GLOWNYM watku gry przez Py_AddPendingCall (bezpieczne). UWAGA: PyGILState_Ensure
+// z obcego watku probowano - na vCore psulo stan Pythona i wywalalo klienta PO wykonaniu. Dlatego
+// trzymamy sie pending-call: na GameCoreTop dziala (petla opruznia kolejke); na vCore callback
+// po prostu nigdy sie nie wykonuje (petla nie opruznia), ale NIC nie psuje - radar pije wtedy
+// klawiszem (z fokusem), a HP i tak czyta z pamieci.
 static int __cdecl pending_run(void *arg)
 {
     char *script = (char *)arg;
-    // Pending-call biegnie z GIL, ale Ensure/Release sa tu bezpieczne (rekurencyjne) i odporne
-    // na ewentualne roznice wersji - wiec zostawiamy je obronnie.
-    dbg("pending_run ENTER (glowny watek): %.60s", script);
+    dbg("pending_run ENTER: %.60s", script);
     int st = p_GILEnsure ? p_GILEnsure() : 0;
     int rc = p_RunSimpleString(script);
     if (p_GILRelease) p_GILRelease(st);
     dbg("pending_run DONE rc=%d", rc);
     free(script);
     return 0;
+}
+
+static void queue_script(const char *script)
+{
+    char *copy = _strdup(script);
+    if (!copy)
+        return;
+    for (int t = 0; t < 50; ++t) {
+        if (p_AddPendingCall(pending_run, copy) == 0) {
+            dbg("Py_AddPendingCall OK (zakolejkowane)");
+            return;
+        }
+        Sleep(2);
+    }
+    free(copy);
+    dbg("Py_AddPendingCall: kolejka pelna");
 }
 
 static bool resolve_python(void)
@@ -90,25 +107,6 @@ static bool resolve_python(void)
     p_GILEnsure       = (PFN_GILEnsure)       GetProcAddress(py, "PyGILState_Ensure");
     p_GILRelease      = (PFN_GILRelease)      GetProcAddress(py, "PyGILState_Release");
     return p_AddPendingCall && p_RunSimpleString;
-}
-
-static void queue_script(const char *script)
-{
-    char *copy = _strdup(script);          // pending-call wykona sie pozniej - potrzebna wlasna kopia
-    if (!copy)
-        return;
-    // Kolejka pending-calls bywa pelna (maly bufor) - ponawiamy chwile.
-    for (int t = 0; t < 50; ++t) {
-        int r = p_AddPendingCall(pending_run, copy);
-        if (r == 0) {
-            dbg("Py_AddPendingCall OK (zakolejkowane)");
-            return;
-        }
-        Sleep(2);
-    }
-    free(copy);
-    dbg("Py_AddPendingCall: kolejka pelna - komenda pominieta");
-    log_dbg("[autopot] kolejka pending-calls pelna - komenda pominieta");
 }
 
 static DWORD WINAPI server_thread(LPVOID)
@@ -130,13 +128,13 @@ static DWORD WINAPI server_thread(LPVOID)
     // python27.dll jest ladowany wczesnie, ale czekamy spokojnie az bedzie gotowy (max ~60 s).
     for (int i = 0; i < 600 && !resolve_python(); ++i)
         Sleep(100);
-    if (!p_AddPendingCall) {
-        dbg("python27.dll / Py_AddPendingCall NIE znaleziony - koniec");
-        log_dbg("[autopot] python27.dll / Py_AddPendingCall nie znaleziony - koniec");
+    if (!p_AddPendingCall || !p_RunSimpleString) {
+        dbg("python27 API (AddPendingCall/RunSimpleString) NIE znalezione - koniec");
+        log_dbg("[autopot] python27 API nie znalezione - koniec");
         return 0;
     }
-    dbg("python OK: AddPendingCall=%p RunSimpleString=%p GILEnsure=%p",
-        (void *)p_AddPendingCall, (void *)p_RunSimpleString, (void *)p_GILEnsure);
+    dbg("python OK: AddPendingCall=%p RunSimpleString=%p",
+        (void *)p_AddPendingCall, (void *)p_RunSimpleString);
     log_dbg("[autopot] gotowy, nasluchuje na potoku per-PID");
 
     for (;;) {

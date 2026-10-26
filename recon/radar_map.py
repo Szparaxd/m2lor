@@ -386,13 +386,20 @@ class RadarMap:
         self.pot_cd = float(val)
 
     def _inject_dll(self):
-        """Wstrzykuje autopot.dll (picie bez fokusu) i laczy potok. Zwraca krotki opis stanu."""
+        """Wstrzykuje autopot.dll (picie bez fokusu) i sprawdza, czy FAKTYCZNIE wykonuje komendy.
+        Niektore klienty (vCore) nie opruzniaja kolejki pending-calls - wtedy picie przez DLL nie
+        zadziala i trzeba klawiszem (z fokusem). Ustawia self.dll_exec. Zwraca opis stanu."""
         try:
             ok, msg = autopot.ensure_injected(self.pm.process_id)
         except Exception as e:
             ok, msg = False, str(e)
         print("[dll] %s" % msg)
-        return "wstrzyknieta" if ok else "brak (%s)" % msg
+        self.dll_exec = bool(ok) and autopot.dll_executes(self.pm.process_id)
+        print("[dll] wykonuje komendy: %s" % ("TAK (picie bez fokusu)" if self.dll_exec
+                                              else "NIE (picie klawiszem, z fokusem)"))
+        if not ok:
+            return "brak (%s)" % msg
+        return "wstrzyknieta, exec" if self.dll_exec else "wstrzyknieta, BEZ exec"
 
     def _reload_moblist(self):
         """Wczytuje liste ponownie, gdy plik sie zmienil (edycja w trakcie dzialania radaru)."""
@@ -536,9 +543,12 @@ class RadarMap:
                 hh = np.nonzero(u == player_vt)[0]
                 if len(hh):
                     player = rb + int(hh[0]) * 4
-            if need_pts_scan:
-                a, rep = autopot.scan_points_block(u, rb)
-                if rep > pts_cand[1]:
+            if need_pts_scan and pts_cand[0] is None:
+                # najpierw plain (nieszyfrowane, np. vCore), potem XOR-run (inne buildy bez RTTI)
+                a, rep = autopot.scan_points_plain(u, rb)
+                if a is None:
+                    a, rep = autopot.scan_points_block(u, rb)
+                if a is not None:
                     pts_cand = (a, rep)
             for h in np.nonzero(u == mob_vt)[0]:
                 mobs.append(rb + int(h) * 4)
@@ -837,11 +847,12 @@ class RadarMap:
             return
         slot = int(POTION_KEY) - 1 if POTION_KEY.isdigit() else 0   # "1" -> indeks 0
         via = None
-        if self.pot_vnums:
-            if autopot.drink_by_vnum(self.pm.process_id, self.pot_vnums):  # skan EQ, po PID gry
-                via = "EQ"
-        elif self.pipe.drink(slot):                        # slot paska przez DLL, bez fokusu
-            via = "slot"
+        if self.dll_exec:                                  # DLL faktycznie wykonuje -> picie bez fokusu
+            if self.pot_vnums:
+                if autopot.drink_by_vnum(self.pm.process_id, self.pot_vnums):   # skan EQ
+                    via = "EQ"
+            elif self.pipe.drink(slot):                    # slot paska przez DLL
+                via = "slot"
         if via is None and self.hwnd and autopot.press_key(self.hwnd, POTION_KEY):  # zapas: fokus
             via = "klawisz"
         if via:
@@ -866,7 +877,7 @@ class RadarMap:
                       font=("Consolas", 8, "bold"))
         method = ("EQ vnum %s" % ",".join(map(str, self.pot_vnums))) if self.pot_vnums \
             else "slot %s" % POTION_KEY
-        mode = "bez fokusu" if self.dll_status.startswith("wstrzyk") else "wymaga fokusu"
+        mode = "bez fokusu" if self.dll_exec else "wymaga fokusu"
         state = ("WL  uzyto:%d" % self.pot_count) if self.autopot_on else "WYL"
         if self._healing:
             state += " [leje]"
