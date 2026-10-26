@@ -310,6 +310,88 @@ def mode_diff(pm, new_value):
         print("Mozesz tez sprobowac wartosc +-kilka, albo HP zamiast maxHP.")
 
 
+TRACK_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "logs", "hp_track.txt")
+
+
+def _read_dword(pm, addr):
+    try:
+        return struct.unpack("<I", pm.read_bytes(addr, 4))[0]
+    except Exception:
+        return None
+
+
+def mode_track(pm, regions, value, reset=False):
+    """Iteracyjne zawezanie (jak CE 'exact value' kilka razy). Odporne na regeneracje HP i na int/float.
+    Runda 1: zapisz WSZYSTKIE adresy == value (int lub float). Kolejne rundy (ZMIEN HP miedzy nimi!):
+    zostaw tylko te, ktore maja nowa podana wartosc. Po 2-3 rundach zostaje prawdziwe HP."""
+    prev = None
+    if not reset and os.path.exists(TRACK_PATH):
+        with open(TRACK_PATH, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        if lines and lines[0].startswith("pid "):
+            pid = int(lines[0].split()[1])
+            if pid == pm.process_id:
+                prev = [(int(a), e) for a, e in (ln.split() for ln in lines[1:])]
+            else:
+                print("[i] Snapshot byl dla innego PID - zaczynam od nowa.")
+    vi = value & 0xFFFFFFFF
+    vf = f32bits(value)
+    if prev is None:
+        cand = []
+        for rb, rs in regions:
+            try:
+                buf = pm.read_bytes(rb, rs)
+            except Exception:
+                continue
+            u = np.frombuffer(buf[:(len(buf) // 4) * 4], dtype="<u4")
+            for enc, V in (("int", vi), ("float", vf)):
+                for i in np.nonzero(u == np.uint32(V))[0]:
+                    cand.append((rb + int(i) * 4, enc))
+        _save_track(pm, cand)
+        print("\n=== TRACK runda 1: %d kandydatow == %d (int+float) ===" % (len(cand), value))
+        print("TERAZ zmien HP (daj sie trafic albo poczekaj na regen), odczytaj NOWE HP i odpal:")
+        print("    python recon/find_hp.py -e <exe> --track <noweHP>")
+        return
+    keep = []
+    for addr, enc in prev:
+        raw = _read_dword(pm, addr)
+        if raw is None:
+            continue
+        if raw == (vi if enc == "int" else vf):
+            keep.append((addr, enc))
+    _save_track(pm, keep)
+    print("\n=== TRACK kolejna runda: z %d -> %d kandydatow (== %d) ===" % (len(prev), len(keep), value))
+    if not keep:
+        print("Zero - najpewniej HP nie bylo dokladnie %d w chwili odczytu (regen!) albo reset." % value)
+        print("Zacznij od nowa: --track <HP> --track-reset, najlepiej gdy HP chwilowo stabilne.")
+        return
+    if len(keep) <= 16:
+        print("Prawie gotowe - okolice kandydatow (int+float):")
+        for addr, enc in keep:
+            print("\n[KAND %s] addr=%#010x" % (enc, addr))
+            try:
+                win = np.frombuffer(pm.read_bytes(addr - 48, 112), dtype="<u4")
+            except Exception:
+                continue
+            for k in range(win.size):
+                raw = int(win[k])
+                iv = struct.unpack("<i", struct.pack("<I", raw))[0]
+                fv = struct.unpack("<f", struct.pack("<I", raw))[0]
+                fvs = (" float=%.3f" % fv) if 1e-3 < abs(fv) < 1e9 else ""
+                mark = "  <== HP" if k == 12 else ""
+                print("   %+3d: int=%12d%s%s" % (k - 12, iv, fvs, mark))
+    else:
+        print("Za duzo - zmien HP jeszcze raz i odpal --track <noweHP> (powtarzaj do <=16).")
+
+
+def _save_track(pm, cand):
+    with open(TRACK_PATH, "w", encoding="utf-8") as f:
+        f.write("pid %d\n" % pm.process_id)
+        for addr, enc in cand:
+            f.write("%d %s\n" % (addr, enc))
+
+
 def mode_shape(pm, regions, min_run):
     print("\n=== TRYB KSZTALT: szukam runow klucza (>=%d) i weryfikuje naglowek ===" % min_run)
     cands = []
@@ -381,6 +463,9 @@ def main():
                     help="skan roznicowy krok 1: zapisz adresy z ta wartoscia (zbroja ZALOZONA)")
     ap.add_argument("--diff", type=int, default=None, metavar="NOWE_MAXHP",
                     help="skan roznicowy krok 2: pokaz adresy zmienione na te wartosc (zbroja ZDJETA)")
+    ap.add_argument("--track", type=int, default=None, metavar="HP",
+                    help="iteracyjne zawezanie: podawaj aktualne HP kilka razy (zmieniaj HP miedzy)")
+    ap.add_argument("--track-reset", action="store_true", help="zacznij zawezanie od nowa")
     ap.add_argument("--min-run", type=int, default=16, help="min. dlugosc runu klucza (tryb ksztalt)")
     ap.add_argument("--shape", action="store_true", help="wymus tryb ksztalt")
     args = ap.parse_args()
@@ -409,6 +494,9 @@ def main():
             return
         if args.diff is not None:
             mode_diff(pm, args.diff)
+            return
+        if args.track is not None:
+            mode_track(pm, regions, args.track, reset=args.track_reset)
             return
 
         known = {"poziom": args.level, "PD": args.exp, "wymPD": args.maxexp,

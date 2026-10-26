@@ -14,3 +14,4 @@ injector/*.obj
 logs/inventory.txt
 logs/find_hp.txt
 logs/hp_snap.txt
+logs/hp_track.txt
