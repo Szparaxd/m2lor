@@ -124,19 +124,97 @@ static bool resolve_python(void)
 #define VCORE_HOOK_RESUME_RVA      0xB3A95
 #define VCORE_RULQS_RVA            0x81190        // RequestUseLocalQuickSlot (__thiscall, 1 arg, ret 4)
 #define VCORE_PICK_RVA             0x83750        // CPythonPlayer::PickCloseItem (__thiscall, 0 arg, ret)
+#define VCORE_MOVETO_RVA           0x325F0        // CInstanceBase::NEW_MoveToDestPixelPositionDirection (thiscall, arg TPixelPosition*)
+#define VCORE_GETPOS_RVA           0x32BA0        // CInstanceBase::NEW_GetPixelPosition (thiscall, arg float[3] out)
+#define VCORE_GETMAIN_VIDX         0x88           // bajtowy indeks wirtualnej GetMainActorPtr w vtable [player+4]
 #define VCORE_PLAYER_SINGLETON_RVA 0x1B8D674      // *(void**) = CPythonPlayer* (bylo 0x1B8C664)
 static const unsigned char VCORE_PROLOGUE[5] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF};
 
+// GameCoreTop.exe (INNY build; ImageBase 0x400000). Ruch natywny NIE przez hook (go nie ma), lecz przez
+// Py_AddPendingCall (pending-calls sa tu opruzniane). Adresy: analiza binarki od eksportu player.PickCloseItem.
+// getMain idx 0x88 i konwencja y=-worldY - takie same jak vCore.
+#define GC_PLAYER_SINGLETON_RVA    0x48BDF8        // *(void**) = CPythonPlayer*
+#define GC_MOVETO_RVA              0xA6A40         // NEW_MoveToDestPixelPositionDirection (ret 4) - NIE 0xA6A00!
+#define GC_GETPOS_RVA              0xA70D0         // NEW_GetPixelPosition (ret 4)
+#define GC_GETMAIN_VIDX            0x88
+
 typedef void(__thiscall *PFN_RULQS)(void *self, unsigned idx);
 typedef void(__thiscall *PFN_PICK)(void *self);     // PickCloseItem - bez argumentow
+typedef void *(__thiscall *PFN_GETMAIN)(void *self); // zwraca CInstanceBase* glownej postaci
+typedef void (__thiscall *PFN_GETPOS)(void *self, float *out3);  // out3 = x, y(=-worldY), z
+typedef void (__thiscall *PFN_MOVETO)(void *self, float *dst3);  // idz do punktu (konwencja jak GetPos)
 
 static unsigned char *g_base = NULL;
 static volatile LONG g_want_drink = 0;
 static volatile LONG g_want_pick = 0;
+static volatile LONG g_want_goto = 0;
+static volatile LONG g_want_getpos = 0;
 static int g_slot = 0;
+static float g_goto_x = 0.0f, g_goto_y = 0.0f;   // cel w konwencji RADARU (worldX, worldY)
 static void *g_tramp = NULL;
+static bool g_is_vcore = false;                  // ktory build -> zestaw RVA + droga wykonania
+struct GotoArg { float x, y; };                  // ladunek dla natywnego pending-call (GameCoreTop)
 
-// Wywolywane CO KLATKE z glownego watku (z wnetrza hooka). Gdy radar poprosil - pijemy natywnie.
+// Wskaznik glownej postaci (CInstanceBase*) - jak PickCloseItem: singleton -> [player+4] ->
+// vtable[0x88] (GetMainActorPtr), wolana z this=player+4. Zestaw RVA zalezy od buildu. NULL poza gra.
+static void *get_main_char(void)
+{
+    uintptr_t sing = g_is_vcore ? VCORE_PLAYER_SINGLETON_RVA : GC_PLAYER_SINGLETON_RVA;
+    char *pl = *(char **)(g_base + sing);
+    if (!pl)
+        return NULL;
+    void **vt = *(void ***)(pl + 4);
+    if (!vt)
+        return NULL;
+    PFN_GETMAIN gm = (PFN_GETMAIN)vt[GC_GETMAIN_VIDX / 4];   // idx 0x88 w obu buildach
+    return gm(pl + 4);
+}
+
+// Idz do punktu. NEW_GetPixelPosition zwraca DOKLADNIE radarowe (worldX, worldY) - zweryfikowane na zywo
+// (!getpos: x=72118 y=132080 == radar), wiec BEZ negacji: dst = {wx, wy, biezace z}. TYLKO glowny watek!
+static void do_goto(float wx, float wy)
+{
+    void *self = get_main_char();
+    if (!self)
+        return;
+    uintptr_t gp = g_is_vcore ? VCORE_GETPOS_RVA : GC_GETPOS_RVA;
+    uintptr_t mv = g_is_vcore ? VCORE_MOVETO_RVA : GC_MOVETO_RVA;
+    float cur[3] = {0, 0, 0};
+    ((PFN_GETPOS)(g_base + gp))(self, cur);
+    float dst[3] = {wx, wy, cur[2]};
+    ((PFN_MOVETO)(g_base + mv))(self, dst);
+}
+
+// Kanarek: zaloguj biezaca pozycje glownej postaci (weryfikacja konwencji). TYLKO glowny watek!
+static void do_getpos(void)
+{
+    void *self = get_main_char();
+    if (!self) {
+        dbg("getpos: brak glownej postaci (self=NULL)");
+        return;
+    }
+    uintptr_t gp = g_is_vcore ? VCORE_GETPOS_RVA : GC_GETPOS_RVA;
+    float cur[3] = {0, 0, 0};
+    ((PFN_GETPOS)(g_base + gp))(self, cur);
+    dbg("getpos: x=%.1f y=%.1f z=%.1f (= radar worldX, worldY)", cur[0], cur[1], cur[2]);
+}
+
+// Natywne pending-call (GameCoreTop: ruch na glownym watku bez hooka; cdecl wg Py_AddPendingCall).
+static int __cdecl pending_goto(void *arg)
+{
+    struct GotoArg *g = (struct GotoArg *)arg;
+    do_goto(g->x, g->y);
+    free(g);
+    return 0;
+}
+static int __cdecl pending_getpos(void *arg)
+{
+    (void)arg;
+    do_getpos();
+    return 0;
+}
+
+// Wywolywane CO KLATKE z glownego watku (z wnetrza hooka). Gdy radar poprosil - robimy natywnie.
 static __declspec(noinline) void on_frame(void)
 {
     if (InterlockedExchange(&g_want_drink, 0)) {
@@ -151,6 +229,11 @@ static __declspec(noinline) void on_frame(void)
         if (self)
             ((PFN_PICK)(g_base + VCORE_PICK_RVA))(self);
     }
+    // kanarek (!getpos) i ruch (!goto) - wspolne helpery (vCore: stad z hooka; GameCoreTop: z pending-call)
+    if (InterlockedExchange(&g_want_getpos, 0))
+        do_getpos();
+    if (InterlockedExchange(&g_want_goto, 0))
+        do_goto(g_goto_x, g_goto_y);
 }
 
 // Detour-stub: zachowuje rejestry, wola on_frame, odtwarza rejestry i skacze do trampoliny
@@ -233,9 +316,12 @@ static DWORD WINAPI server_thread(LPVOID)
         return 0;
     }
 
-    dbg("server start, pipe=%s", pipe_name);
-    // vCore: zainstaluj hook per-klatka (picie bez fokusu). Inne buildy: picie przez pending-call.
-    if (is_vcore())
+    g_base = (unsigned char *)GetModuleHandleA(NULL);   // baza exe gry (ruch natywny uzywa jej na obu buildach)
+    g_is_vcore = is_vcore();
+    dbg("server start, pipe=%s (vcore=%d)", pipe_name, (int)g_is_vcore);
+    // vCore: hook per-klatka (natywne wywolania bez fokusu). GameCoreTop: brak hooka - ruch/getpos ida
+    // przez Py_AddPendingCall (pending-calls sa tu opruzniane), picie/loot przez Pythona.
+    if (g_is_vcore)
         install_vcore_hook();
     // python27.dll jest ladowany wczesnie, ale czekamy spokojnie az bedzie gotowy (max ~60 s).
     for (int i = 0; i < 600 && !resolve_python(); ++i)
@@ -282,6 +368,28 @@ static DWORD WINAPI server_thread(LPVOID)
                             } else if (strncmp(cmd, "!pick", 5) == 0) {
                                 InterlockedExchange(&g_want_pick, 1);
                                 dbg("native pick (flaga dla hooka)");
+                            } else if (strncmp(cmd, "!getpos", 7) == 0) {
+                                if (g_is_vcore)
+                                    InterlockedExchange(&g_want_getpos, 1);     // vCore: wykona hook on_frame
+                                else if (p_AddPendingCall)
+                                    p_AddPendingCall(pending_getpos, NULL);     // GameCoreTop: pending-call
+                                dbg("native getpos (vcore=%d)", (int)g_is_vcore);
+                            } else if (strncmp(cmd, "!goto", 5) == 0) {
+                                float gx = 0.0f, gy = 0.0f;
+                                sscanf(cmd + 5, "%f %f", &gx, &gy);
+                                if (g_is_vcore) {
+                                    g_goto_x = gx;
+                                    g_goto_y = gy;
+                                    InterlockedExchange(&g_want_goto, 1);       // vCore: hook on_frame
+                                } else if (p_AddPendingCall) {
+                                    struct GotoArg *a = (struct GotoArg *)malloc(sizeof(struct GotoArg));
+                                    if (a) {
+                                        a->x = gx;
+                                        a->y = gy;
+                                        p_AddPendingCall(pending_goto, a);      // GameCoreTop: pending-call
+                                    }
+                                }
+                                dbg("native goto: (%.1f, %.1f) vcore=%d", gx, gy, (int)g_is_vcore);
                             }
                         } else {
                             queue_script(cmd);          // Python (dziala tam, gdzie petla opruznia kolejke)

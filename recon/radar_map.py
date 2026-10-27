@@ -56,6 +56,7 @@ import pymem.process
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import autopot
 import calibrate
+import collision as collision_mod
 import map_assets
 import rtti
 from PIL import Image, ImageTk
@@ -144,6 +145,17 @@ POTION_POLL = 0.07        # s - jak czesto dedykowana petla sprawdza HP (szybka 
 # podnosi najblizszy drop w zasiegu (<=300). Dziala tam, gdzie pending-calls sa opruzniane
 # (GameCoreTop). Bez detekcji w pamieci i bez filtra vnum - to prosta wersja na start.
 LOOT_INTERVAL = 0.5       # s - odstep miedzy probami podniesienia (suwak "Loot co s")
+# Auto-chodzenie (funkcja 3): postac idzie po liscie waypointow (wsp. swiata). Ruch natywny przez
+# hook per-klatka (vCore): DLL wola NEW_MoveToDestPixelPositionDirection. Pakiety ruchu leca same.
+WALK_REACH = 150.0        # jedn. swiata: tak blisko celu = waypoint osiagniety -> nastepny
+WALK_RESEND = 0.5         # s: co ile ponawiac !goto do biezacego celu (keep-alive/korekta)
+WALK_STUCK_SEC = 1.5      # s: brak postepu tyle -> wejdz w tryb omijania przeszkody
+# Omijanie przeszkod bez mapy kolizji (podazanie wzdluz sciany): przy utknieciu kierujemy postac pod
+# katem do celu (60/90/120/150 stopni w bok) i trzymamy ten kurs; gdy postac SIE NIE RUSZA, obracamy
+# kurs dalej, a gdy wyczerpiemy katy - zmieniamy strone. Konczymy, gdy zblizymy sie do celu bardziej
+# niz w chwili utkniecia; poddajemy sie (pomijamy waypoint) po WALK_GIVEUP s lub 2 zmianach strony.
+WALK_PLAN_SEC = 1.5       # s: co ile przeliczac trase A* do biezacego waypointu (replan)
+WALK_STUCK_REPLAN = 2.0   # s: brak postepu tyle -> wymus replan trasy
 # Stabilny odczyt HP przez wskaznik singletona CPythonPlayer - dla buildow bez RTTI, gdzie skan
 # pamieci zawodzi (np. vCore: tablica 8-bajtowa, dolny dword XOR). RVA/offsety sa SPECYFICZNE DLA
 # DANEGO BUILDU exe (znalezione analiza binarki). value(i)=*(base+singleton_rva)+array_off+i*stride ^key.
@@ -333,6 +345,20 @@ class RadarMap:
         self.loot_interval = LOOT_INTERVAL
         self._last_loot = 0.0
         self.loot_count = 0
+        # auto-chodzenie (funkcja 3): waypointy w wsp. swiata; petla idzie po nich (tylko vCore/hook).
+        # Ctrl+LPM dodaje waypoint, [C] czysci, [G]/checkbox start-stop.
+        self.autowalk_on = False
+        self.path = []                # [(wx, wy)] - waypointy uzytkownika (Ctrl+klik)
+        self.walk_idx = 0
+        self._last_goto = 0.0
+        self._walk_prog = None        # (czas, dist) - do wykrywania utkniecia (wymusza replan)
+        # omijanie przeszkod po REALNEJ siatce kolizji (CMapOutdoor attr) + pathfinding A*
+        self.collision = collision_mod.Collision(self.pm, self.proc_name)
+        self.show_collision = True    # rysuj zablokowane pola na radarze ([B] przelacza)
+        self._route = []              # aktualna trasa A* do biezacego waypointu [(wx,wy)]
+        self._route_idx = 0
+        self._last_plan = 0.0
+        self._coll_cache = (0.0, [])  # (czas, lista (wx,wy) zablokowanych pol w poblizu) - do rysowania
 
         self.root = root
         # Przywroc pozycje i rozmiar okna z poprzedniej sesji (albo domyslny wysoki prostokat).
@@ -353,6 +379,7 @@ class RadarMap:
         self.cd_var = tk.DoubleVar(value=self.pot_cd)
         self.autoloot_var = tk.BooleanVar(value=self.autoloot_on)
         self.loot_var = tk.DoubleVar(value=self.loot_interval)
+        self.autowalk_var = tk.BooleanVar(value=self.autowalk_on)
 
         self.canvas = tk.Canvas(root, width=CANVAS, height=CANVAS, bg="#0b0f0b", highlightthickness=0)
         panel = tk.Frame(root, bg="#0b0f0b")
@@ -381,6 +408,8 @@ class RadarMap:
         _mkscale("Odstep s", self.cd_var, 0.1, 1.0, 0.05, self._on_cd, "#cdebcf")
         _chk("Auto-loot", self.autoloot_var, self._on_autoloot_check, "#e9d5a0", "#f5e6bf")
         _mkscale("Loot co s", self.loot_var, 0.2, 2.0, 0.1, self._on_loot_cd, "#e9d5a0")
+        _chk("Auto-chodzenie (Ctrl+klik=punkt, C=czysc)", self.autowalk_var,
+             self._on_autowalk_check, "#9fd0ff", "#cfe8ff")
 
         # Kolejnosc pakowania wazna: PANEL na dole, canvas wypelnia reszte NAD nim.
         panel.pack(side="bottom", fill="x")
@@ -474,6 +503,14 @@ class RadarMap:
     def _on_loot_cd(self, val):
         self.loot_interval = float(val)
 
+    def _on_autowalk_check(self):
+        self.autowalk_on = bool(self.autowalk_var.get())
+        if self.autowalk_on:
+            self.walk_idx = 0
+            self._walk_prog = None
+            self._route = []
+            self._last_plan = 0.0
+
     def _on_close(self):
         """Zapisz pozycje i rozmiar okna (by otworzyc sie tam samo), potem zamknij."""
         try:
@@ -514,7 +551,15 @@ class RadarMap:
             print("[lista] wczytano %d wpisow z %s" % (len(self.moblist), MOBLIST_PATH))
 
     def on_click(self, e):
-        """Klik na znacznik moba -> menu: dopisz do listy jako boss/special/normal albo usun."""
+        """Ctrl+LPM -> dodaj waypoint (auto-chodzenie). Zwykly LPM na mobie -> menu listy."""
+        if e.state & 0x0004:                         # Control wcisniety -> dodaj waypoint
+            hx, hy = self._hero_world()
+            if hx is None:
+                return
+            wx, wy = self.canvas_to_world(e.x, e.y, hx, hy)
+            self.path.append((wx, wy))
+            print("[walk] waypoint %d: (%.0f, %.0f)" % (len(self.path), wx, wy))
+            return
         near = [(math.hypot(sx - e.x, sy - e.y), vnum, o) for sx, sy, vnum, o in self._hits]
         near = [h for h in near if h[0] <= CLICK_RADIUS]
         if not near:
@@ -715,6 +760,8 @@ class RadarMap:
                         metins.append((mx, my, "metin"))
         self.hero_obj = hero if hero is not None else self.hero_obj
         self.mapout_obj = mapout if mapout is not None else self.mapout_obj
+        if self.mapout_obj:
+            self.collision.set_mapout(self.mapout_obj)
         if player is not None and (player != self.player_obj or self.points_addr is None):
             off = autopot.find_points(self.pm, player)
             self.player_obj = player
@@ -820,6 +867,22 @@ class RadarMap:
             s = self._full_scale()
             return ix * s + self.pan_x, iy * s + self.pan_y
 
+    def canvas_to_world(self, sx, sy, hx, hy):
+        """Odwrotnosc world_to_canvas: punkt na canvasie -> wspolrzedne swiata (do waypointow)."""
+        m = self.map
+        if self.mode == "follow":
+            hix, hiy = m.world_to_image(hx, hy)
+            scale = self._follow_scale()
+            ix = hix + (sx - self.cw / 2) / scale
+            iy = hiy + (sy - self.ch / 2) / scale
+        else:
+            s = self._full_scale()
+            ix = (sx - self.pan_x) / s
+            iy = (sy - self.pan_y) / s
+        lx = (m.w_px - ix) if m.flip_x else ix       # odwrocenie flipow z world_to_image
+        ly = (m.h_px - iy) if m.flip_y else iy
+        return lx * map_assets.WORLD_PER_PX + m.bx, ly * map_assets.WORLD_PER_PX + m.by
+
     def _bg_image(self, hx, hy):
         """Zwraca (PhotoImage, x, y) tla dopasowanego do aktualnego widoku."""
         if self.mode == "follow":
@@ -870,6 +933,22 @@ class RadarMap:
         elif k == "l":
             self.autoloot_on = not self.autoloot_on
             self.autoloot_var.set(self.autoloot_on)     # odbij w checkboxie
+        elif k == "g":
+            self.autowalk_on = not self.autowalk_on
+            self.autowalk_var.set(self.autowalk_on)     # start/stop auto-chodzenia
+            if self.autowalk_on:
+                self.walk_idx = 0
+                self._walk_prog = None
+                self._route = []
+                self._last_plan = 0.0
+        elif k == "c":
+            self.path = []                              # wyczysc waypointy
+            self.walk_idx = 0
+            self._walk_prog = None
+            self._route = []
+            print("[walk] trasa wyczyszczona")
+        elif k == "b":
+            self.show_collision = not self.show_collision   # siatka kolizji wl/wyl
         elif k == "j":
             self.dll_status = self._inject_dll()
         elif k == "bracketleft":
@@ -969,6 +1048,8 @@ class RadarMap:
                 c.create_text(sx + 1, sy - 15, fill="#000", text=nm, font=("Consolas", 9, "bold"))
                 c.create_text(sx, sy - 16, fill=col, text=nm, font=("Consolas", 9, "bold"))
         self._hits = hits
+        self._draw_collision(c, hx, hy)                   # siatka kolizji (pod trasa i graczem)
+        self._draw_path(c, hx, hy)                        # trasa auto-chodzenia (pod graczem)
 
         # gracz
         sx, sy = self.cw / 2, self.ch / 2
@@ -1002,6 +1083,122 @@ class RadarMap:
                 self._autoloot_step()
             except Exception as e:
                 print("[loot] blad petli:", e)
+            try:
+                self._autowalk_step()
+            except Exception as e:
+                print("[walk] blad petli:", e)
+
+    def _autowalk_step(self):
+        """Idzie po waypointach (zapetlonych). Do kazdego liczy trase A* po REALNEJ siatce kolizji
+        (CMapOutdoor attr) i podaza po niej, omijajac sciany; replan co WALK_PLAN_SEC lub przy utknieciu.
+        Gdy brak trasy (cel nieosiagalny) - jedzie wprost (best effort). vCore: hook; GameCoreTop: pending."""
+        if not self.autowalk_on or not self.path:
+            return
+        if not (self.native_drink or self.dll_exec):   # vCore: hook; GameCoreTop: pending-call
+            return
+        hx, hy = self._hero_world()
+        if hx is None:
+            return
+        now = time.time()
+        self.collision.set_mapout(self.mapout_obj)
+        self.collision.refresh()
+        self.walk_idx %= len(self.path)
+        tx, ty = self.path[self.walk_idx]
+        d = math.hypot(tx - hx, ty - hy)
+        if d < WALK_REACH:                          # waypoint osiagniety -> nastepny (petla)
+            self.walk_idx = (self.walk_idx + 1) % len(self.path)
+            self._walk_prog = None
+            self._route = []
+            return
+
+        # detekcja utkniecia: brak postepu -> wymus replan (siatka moze sie zmienic / trasa nieaktualna)
+        if self._walk_prog is None or d < self._walk_prog[1] - 20:
+            self._walk_prog = (now, d)
+        elif now - self._walk_prog[0] > WALK_STUCK_REPLAN:
+            self._last_plan = 0.0
+            self._walk_prog = (now, d)
+
+        # (re)plan trasy A* po realnej siatce kolizji, okresowo albo gdy brak trasy
+        if self.collision.ok and (not self._route or now - self._last_plan > WALK_PLAN_SEC):
+            p = self.collision.find_path(hx, hy, tx, ty)
+            self._last_plan = now
+            self._route = p or []
+            self._route_idx = 0
+
+        # wybierz biezacy cel: punkt trasy A* (omija sciany) albo wprost waypoint (gdy brak trasy)
+        tgt = (tx, ty)
+        if self._route:
+            while (self._route_idx < len(self._route) and
+                   math.hypot(self._route[self._route_idx][0] - hx,
+                              self._route[self._route_idx][1] - hy) < WALK_REACH):
+                self._route_idx += 1
+            if self._route_idx >= len(self._route):
+                self._route = []                    # przeszlismy trase -> replan nastepnym razem
+            else:
+                tgt = self._route[self._route_idx]
+
+        if now - self._last_goto >= WALK_RESEND:     # ponawiaj biezacy cel (keep-alive/korekta)
+            autopot.goto_native(self.pm.process_id, tgt[0], tgt[1])
+            self._last_goto = now
+
+    def _draw_collision(self, c, hx, hy):
+        """Rysuje zablokowane pola (ATTRIBUTE_BLOCK) wokol gracza jako czerwone kwadraty - jak siatka
+        kolizji w grze. Lista pol liczona co ~0.4 s (cache), rysowana co klatke. [B] wl/wyl."""
+        if not self.show_collision or not self.collision.ok or self.mapout_obj is None:
+            return
+        now = time.time()
+        cached_t, cells = self._coll_cache
+        if now - cached_t > 0.4:
+            cells = []
+            try:
+                self.collision.set_mapout(self.mapout_obj)
+                self.collision.refresh()
+                cell = collision_mod.CELL
+                cx, cy = int(hx) // cell, int(hy) // cell
+                R = 24
+                for gy in range(cy - R, cy + R + 1):
+                    for gx in range(cx - R, cx + R + 1):
+                        if self.collision._cell_block(gx, gy):
+                            cells.append((gx * cell, gy * cell))      # rog komorki (swiat)
+            except Exception:
+                cells = []
+            self._coll_cache = (now, cells)
+        cell = collision_mod.CELL
+        drawn = 0
+        for wx, wy in cells:
+            sx, sy = self.world_to_canvas(wx, wy, hx, hy)
+            if not self._in_view(sx, sy):
+                continue
+            sx2, sy2 = self.world_to_canvas(wx + cell, wy + cell, hx, hy)
+            c.create_rectangle(sx, sy, sx2, sy2, outline="", fill="#ff3b3b", stipple="gray25")
+            drawn += 1
+            if drawn > 1400:                      # zabezpieczenie przed zamuleniem
+                break
+
+    def _draw_path(self, c, hx, hy):
+        """Rysuje trase auto-chodzenia: linie miedzy waypointami + numerowane punkty; biezacy cel wiekszy."""
+        if not self.path:
+            return
+        pts = [self.world_to_canvas(wx, wy, hx, hy) for wx, wy in self.path]
+        col = "#9fd0ff" if self.autowalk_on else "#5a7a9a"
+        if len(pts) > 1:
+            flat = [v for p in pts for v in p]
+            c.create_line(*flat, fill=col, width=2, dash=(4, 3))
+        for i, (sx, sy) in enumerate(pts):
+            if not self._in_view(sx, sy):
+                continue
+            cur = (i == self.walk_idx and self.autowalk_on)
+            r = 6 if cur else 4
+            fill = "#ffffff" if cur else col
+            c.create_oval(sx - r, sy - r, sx + r, sy + r, fill=fill, outline="#000")
+            c.create_text(sx, sy - r - 6, fill=col, text=str(i + 1), font=("Consolas", 8, "bold"))
+        # wyliczona trasa A* (omijanie scian) - cienka pomaranczowa linia od gracza przez punkty trasy
+        if self._route and self.autowalk_on:
+            rp = [(self.cw / 2, self.ch / 2) if self.mode == "follow"
+                  else self.world_to_canvas(hx, hy, hx, hy)]
+            rp += [self.world_to_canvas(rx, ry, hx, hy) for rx, ry in self._route]
+            flat = [v for p in rp for v in p]
+            c.create_line(*flat, fill="#ff9f1a", width=2)
 
     def _autoloot_step(self):
         """Co loot_interval podnosi najblizszy drop w zasiegu (PickCloseItem).
@@ -1085,7 +1282,7 @@ class RadarMap:
             return
         hp, mhp, pct = self._hp, self._mhp, self._pct
         w = 180
-        c.create_rectangle(2, 2, 560, 54, fill="#0b0f0b", outline="")     # tlo dla czytelnosci
+        c.create_rectangle(2, 2, 560, 68, fill="#0b0f0b", outline="")     # tlo dla czytelnosci
         c.create_rectangle(8, 8, 8 + w, 22, fill="#300", outline="#000")
         c.create_rectangle(8, 8, 8 + w * max(0.0, min(1.0, hp / mhp)), 22, fill="#d22", outline="")
         c.create_line(8 + w * self.pot_low / 100.0, 6, 8 + w * self.pot_low / 100.0, 24,
@@ -1117,6 +1314,21 @@ class RadarMap:
         c.create_text(8, 47, anchor="w", fill=loot_col,
                       text="[L]auto-loot %s  co%.1fs (najblizszy <=300, %s)"
                            % (loot_state, self.loot_interval, loot_via),
+                      font=("Consolas", 8))
+        # auto-chodzenie (vCore: hook; GameCoreTop: pending-call)
+        if self.native_drink or self.dll_exec:
+            if self.autowalk_on and self.path:
+                walk_txt = "WL  wp %d/%d" % (self.walk_idx + 1, len(self.path))
+            elif self.autowalk_on:
+                walk_txt = "WL (brak trasy - Ctrl+klik)"
+            else:
+                walk_txt = "WYL  punktow:%d" % len(self.path)
+            walk_col = "#9fd0ff" if self.autowalk_on else "#999"
+        else:
+            walk_txt = "niedostepne (brak exec/hook DLL)"
+            walk_col = "#999"
+        c.create_text(8, 61, anchor="w", fill=walk_col,
+                      text="[G]auto-chodzenie %s  (Ctrl+klik=punkt, C=czysc)" % walk_txt,
                       font=("Consolas", 8))
 
 

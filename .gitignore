@@ -10,6 +10,9 @@ dll/*.lib
 injector/*.exe
 injector/*.obj
 
+# Stan UI (pozycja/rozmiar okna) - per uzytkownik, generowany
+data/ui_state.json
+
 # Robocze zrzuty
 logs/inventory.txt
 logs/find_hp.txt

@@ -353,6 +353,20 @@ def pick_close_item_native(pid):
     return send_command(pid, "!pick")
 
 
+def goto_native(pid, wx, wy):
+    """vCore: idz do punktu swiata (wx, wy) w konwencji RADARU - NATYWNIE z hooka per-klatka.
+    DLL buduje pixel-pos (x=wx, y=wy, z=biezace - konwencja zgodna z NEW_GetPixelPosition) i wola NEW_MoveToDestPixelPositionDirection
+    na glownej postaci. Postac idzie jak po kliknieciu mysza (pakiety ruchu leca same). Jedno
+    wywolanie uruchamia marsz do celu; radar ponawia okresowo (korekta/keep-alive)."""
+    return send_command(pid, "!goto %.1f %.1f" % (float(wx), float(wy)))
+
+
+def getpos_native(pid):
+    """vCore: kanarek - DLL loguje do dll_debug.txt biezaca pozycje glownej postaci
+    (NEW_GetPixelPosition). Do weryfikacji konwencji wspolrzednych przed ruchem."""
+    return send_command(pid, "!getpos")
+
+
 def _project_paths():
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # radar-project\
     return (os.path.join(base, "dll", "autopot.dll"),
