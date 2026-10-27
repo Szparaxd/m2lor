@@ -22,6 +22,6 @@
 532 special  # Best. Maniak
 151 special  # Cung-Mok
 155 special  # Li-An*
-182 special  # Głodny Czar. Niedźw.
 154 special  # Young-Ji
 534 special  # Best. Specjalista*
+391 special  # Mi-Jung
