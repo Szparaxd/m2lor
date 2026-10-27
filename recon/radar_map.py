@@ -173,6 +173,7 @@ FARM_OFFSETS = {
     # vCore: do uzupelnienia (inny build).
 }
 FARM_RADIUS = 2500.0      # domyslny promien okregu farmienia (jedn. swiata; ~25 px minimapy)
+FARM_MELEE = 300.0        # jedn. swiata: tak blisko celu = oddaj atak klientowi (dalej - dochodzimy A*)
 # Stabilny odczyt HP przez wskaznik singletona CPythonPlayer - dla buildow bez RTTI, gdzie skan
 # pamieci zawodzi (np. vCore: tablica 8-bajtowa, dolny dword XOR). RVA/offsety sa SPECYFICZNE DLA
 # DANEGO BUILDU exe (znalezione analiza binarki). value(i)=*(base+singleton_rva)+array_off+i*stride ^key.
@@ -388,6 +389,8 @@ class RadarMap:
         self.farm_radius = FARM_RADIUS
         self.farm_center = None        # (wx, wy) - srodek okregu (ustawiany przy wlaczeniu)
         self._last_farm = 0.0
+        self.farm_metin = True         # bij metiny (najwyzszy priorytet)
+        self.farm_boss = True          # bij bossy z priorytetem (nad zwyklymi mobami)
 
         self.root = root
         # Przywroc pozycje i rozmiar okna z poprzedniej sesji (albo domyslny wysoki prostokat).
@@ -414,6 +417,8 @@ class RadarMap:
         self.atkx_var = tk.DoubleVar(value=self.atk_mult)
         self.farm_var = tk.BooleanVar(value=self.farm_on)
         self.farmr_var = tk.IntVar(value=int(self.farm_radius))
+        self.farm_metin_var = tk.BooleanVar(value=self.farm_metin)
+        self.farm_boss_var = tk.BooleanVar(value=self.farm_boss)
 
         self.canvas = tk.Canvas(root, width=CANVAS, height=CANVAS, bg="#0b0f0b", highlightthickness=0)
         panel = tk.Frame(root, bg="#0b0f0b")
@@ -446,6 +451,8 @@ class RadarMap:
              self._on_autowalk_check, "#9fd0ff", "#cfe8ff")
         _chk("Auto-farm (okrag wokol postaci)", self.farm_var, self._on_farm_check, "#ff6a6a", "#ffb0b0")
         _mkscale("Promien", self.farmr_var, 500, 6000, 100, self._on_farmr, "#ff6a6a")
+        _chk("  Bij metiny (priorytet)", self.farm_metin_var, self._on_farm_metin, "#ffe14d", "#fff0a0")
+        _chk("  Bij bossy (priorytet)", self.farm_boss_var, self._on_farm_boss, "#d94dff", "#ecb0ff")
         _chk("Speedhack (test - serwer moze ucinac)", self.speed_var,
              self._on_speed_check, "#ff9f1a", "#ffd79a")
         _mkscale("Ruch x", self.movx_var, 1.0, 3.0, 0.1, self._on_movx, "#ff9f1a")
@@ -554,6 +561,12 @@ class RadarMap:
 
     def _on_farmr(self, val):
         self.farm_radius = float(val)
+
+    def _on_farm_metin(self):
+        self.farm_metin = bool(self.farm_metin_var.get())
+
+    def _on_farm_boss(self):
+        self.farm_boss = bool(self.farm_boss_var.get())
 
     def _on_speed_check(self):
         self.speed_on = bool(self.speed_var.get())
@@ -728,7 +741,7 @@ class RadarMap:
         if len(set(a[0] for a in acts)) == 1:
             return self._fmt_metin(acts[0][1], acts[0][0])
         best = None
-        for vnum, name, x, y in acts:
+        for vnum, name, x, y, _vid in acts:
             if x is None:
                 continue
             d = math.hypot(x - mx, y - my)
@@ -875,7 +888,13 @@ class RadarMap:
                         ax = ay = None
                 except Exception:
                     ax = ay = None
-                metin_actors.append((vnum, self._mob_name(o), ax, ay))
+                vid = 0
+                if self.farm_off:               # VID metina (do auto-farmu); offset per build
+                    try:
+                        vid = self.pm.read_uint(o + self.farm_off["vid"])
+                    except Exception:
+                        vid = 0
+                metin_actors.append((vnum, self._mob_name(o), ax, ay, vid))
         self.metin_actors = metin_actors
         self.effs = effs
         self.metins = metins
@@ -1184,45 +1203,93 @@ class RadarMap:
             except Exception as e:
                 print("[farm] blad petli:", e)
 
+    def _metin_targets(self):
+        """Metiny do bicia: pozycja z EFEKTU (stabilna) + VID z najblizszego aktora-metina."""
+        acts = [(x, y, vid) for (vnum, nm, x, y, vid) in self.metin_actors if x is not None and vid]
+        out = []
+        for mx, my, _ in self.metins:
+            if not acts:
+                break
+            a = min(acts, key=lambda t: math.hypot(t[0] - mx, t[1] - my))
+            out.append((mx, my, a[2]))
+        return out
+
+    def _farm_pick_target(self, hx, hy):
+        """Najlepszy cel w okregu wg priorytetu metin>boss>mob: (vid, tx, ty, is_metin) albo None."""
+        cx, cy = self.farm_center
+        R = self.farm_radius
+        cands = []                              # (priorytet, dist_do_gracza, vid, tx, ty, is_metin)
+        if self.farm_metin:
+            for mx, my, vid in self._metin_targets():
+                if math.hypot(mx - cx, my - cy) <= R:
+                    cands.append((0, math.hypot(mx - hx, my - hy), vid, mx, my, True))
+        vid_off = self.farm_off["vid"]
+        for mx, my, vnum, is_pc, o in self._iter_mobs(hx, hy):
+            if is_pc:
+                continue
+            cls = self._classify(vnum, is_pc)
+            if cls == "npc":
+                continue
+            if math.hypot(mx - cx, my - cy) > R:
+                continue
+            pr = 1 if (cls in ("boss", "king") and self.farm_boss) else 2
+            try:
+                vid = self.pm.read_uint(o + vid_off)
+            except Exception:
+                continue
+            if vid:
+                cands.append((pr, math.hypot(mx - hx, my - hy), vid, mx, my, False))
+        if not cands:
+            return None
+        cands.sort(key=lambda c: (c[0], c[1]))
+        _, _, vid, tx, ty, ism = cands[0]
+        return vid, tx, ty, ism
+
     def _farm_step(self):
-        """Auto-farm: jesli nie ma aktywnego celu auto-ataku, wybiera najblizszego moba w okregu i wpisuje
-        jego VID do CPythonPlayer.m_dwAutoAttackTargetVID - klient sam podchodzi, bije i czysci po smierci."""
+        """Auto-farm: wybiera cel (metin>boss>mob) w okregu. W zasiegu oddaje atak klientowi (wpis VID do
+        auto-attack target). Poza zasiegiem SAM prowadzi postac A* (omijajac metiny) - bez prostego
+        podejscia klienta, ktore wbija sie w metiny/przeszkody."""
         if not self.farm_on or not self.farm_off or self.player_obj is None or self.farm_center is None:
             return
         now = time.time()
-        if now - self._last_farm < 0.3:        # nie spamuj co 0.07s
+        if now - self._last_farm < 0.25:
             return
         self._last_farm = now
-        va = self.player_obj + self.farm_off["autoatk"]
-        try:
-            cur = self.pm.read_uint(va)
-        except Exception:
-            return
-        if cur != 0:
-            return                              # cel aktywny - klient atakuje, nie przeszkadzamy
-        # brak celu -> wybierz najblizszego moba w okregu (od srodka farmy)
-        cx, cy = self.farm_center
         hx, hy = self._hero_world()
         if hx is None:
             return
-        vid_off = self.farm_off["vid"]
-        best, bd = None, 1e18
-        for mx, my, vnum, is_pc, o in self._iter_mobs(hx, hy):
-            if is_pc or self._classify(vnum, is_pc) in ("npc",):   # tylko moby/bossy, nie gracze/NPC
-                continue
-            if math.hypot(mx - cx, my - cy) > self.farm_radius:     # poza okregiem
-                continue
-            d = math.hypot(mx - hx, my - hy)
-            if d < bd:
-                bd, best = d, o
-        if best is None:
+        va = self.player_obj + self.farm_off["autoatk"]
+        tgt = self._farm_pick_target(hx, hy)
+        if tgt is None:
+            try:                                # brak celu w okregu -> nie trzymaj starego
+                if self.pm.read_uint(va) != 0:
+                    self.pm.write_uint(va, 0)
+            except Exception:
+                pass
             return
+        vid, tx, ty, is_metin = tgt
+        d = math.hypot(tx - hx, ty - hy)
+        if d <= FARM_MELEE:                      # w zasiegu -> atak klienta w miejscu
+            try:
+                if self.pm.read_uint(va) != vid:
+                    self.pm.write_uint(va, vid)
+            except Exception:
+                pass
+            return
+        # poza zasiegiem: wylacz podejscie klienta (bumpuje metiny) i prowadz sami po A*
         try:
-            vid = self.pm.read_uint(best + vid_off)
-            if vid:
-                self.pm.write_uint(va, vid)     # ustaw cel auto-ataku -> klient atakuje
+            if self.pm.read_uint(va) != 0:
+                self.pm.write_uint(va, 0)
         except Exception:
             pass
+        if not (self.native_drink or self.dll_exec):
+            return
+        obst = [(mx, my) for mx, my, _ in self.metins]
+        if is_metin:                            # celem jest metin -> nie traktuj GO jako przeszkody
+            obst = [(mx, my) for (mx, my) in obst if math.hypot(mx - tx, my - ty) > 150]
+        route = self.collision.find_path(hx, hy, tx, ty, extra_blocked=obst) if self.collision.ok else None
+        nxt = route[0] if route else (tx, ty)
+        autopot.goto_native(self.pm.process_id, nxt[0], nxt[1])
 
     def _speed_step(self):
         """EKSPERYMENT: zapisuje mnozniki predkosci do wlasnej postaci co petle (serwer je nadpisuje).
@@ -1265,9 +1332,10 @@ class RadarMap:
             self._last_plan = 0.0
             self._walk_prog = (now, d)
 
-        # (re)plan trasy A* po realnej siatce kolizji, okresowo albo gdy brak trasy
+        # (re)plan trasy A* po realnej siatce kolizji + metiny jako przeszkody, okresowo albo gdy brak trasy
         if self.collision.ok and (not self._route or now - self._last_plan > WALK_PLAN_SEC):
-            p = self.collision.find_path(hx, hy, tx, ty)
+            obst = [(mx, my) for mx, my, _ in self.metins]
+            p = self.collision.find_path(hx, hy, tx, ty, extra_blocked=obst)
             self._last_plan = now
             self._route = p or []
             self._route_idx = 0

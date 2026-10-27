@@ -95,20 +95,27 @@ class Collision:
     def _cell_block(self, gx, gy):
         return self.is_block(gx * CELL + 1, gy * CELL + 1)
 
-    def find_path(self, sx, sy, gx, gy, margin=6, max_span=140, inflate=1):
+    def find_path(self, sx, sy, gx, gy, margin=6, max_span=140, inflate=1, extra_blocked=None):
         """A* po komorkach (100 jedn.) od (sx,sy) do (gx,gy). Zwraca liste (wx,wy) centrow komorek
-        (wygladzona przez LOS) BEZ komorki startu, albo None gdy brak trasy / cel za daleko."""
+        (wygladzona przez LOS) BEZ komorki startu, albo None gdy brak trasy / cel za daleko.
+        extra_blocked: lista (wx,wy) PUNKTOW swiata traktowanych jako przeszkoda (np. metiny) - oprocz mapy."""
         scx, scy = int(sx) // CELL, int(sy) // CELL
         gcx, gcy = int(gx) // CELL, int(gy) // CELL
         minx, maxx = min(scx, gcx) - margin, max(scx, gcx) + margin
         miny, maxy = min(scy, gcy) - margin, max(scy, gcy) + margin
         if (maxx - minx) > max_span or (maxy - miny) > max_span:
             return None
+        # dodatkowe przeszkody-encje (metiny): komorki ich zajmujace (poza celem)
+        extra_cells = set()
+        if extra_blocked:
+            for ex, ey in extra_blocked:
+                extra_cells.add((int(ex) // CELL, int(ey) // CELL))
+            extra_cells.discard((gcx, gcy))     # nie blokuj komorki celu
         # siatka blokad w bboxie (+ opcjonalne pogrubienie przeszkod o 'inflate' komorek)
         raw = {}
         for gy_ in range(miny, maxy + 1):
             for gx_ in range(minx, maxx + 1):
-                raw[(gx_, gy_)] = self._cell_block(gx_, gy_)
+                raw[(gx_, gy_)] = self._cell_block(gx_, gy_) or ((gx_, gy_) in extra_cells)
         blk = raw
         if inflate:
             # pogrubienie: komorka = przeszkoda, jesli ktoras sasiednia (do 'inflate') jest przeszkoda
