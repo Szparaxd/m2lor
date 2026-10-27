@@ -156,6 +156,14 @@ WALK_STUCK_SEC = 1.5      # s: brak postepu tyle -> wejdz w tryb omijania przesz
 # niz w chwili utkniecia; poddajemy sie (pomijamy waypoint) po WALK_GIVEUP s lub 2 zmianach strony.
 WALK_PLAN_SEC = 1.5       # s: co ile przeliczac trase A* do biezacego waypointu (replan)
 WALK_STUCK_REPLAN = 2.0   # s: brak postepu tyle -> wymus replan trasy
+# Speedhack (EKSPERYMENT - test czy serwer waliduje; patrz ANALIZA): m_fMovSpd/m_fAtkSpd to mnozniki
+# animacji w CActorInstance (1.0=100%). Serwer nadpisuje je przy char_update -> re-aplikujemy co petle.
+# Offsety WZGLEDEM wskaznika CActorInstance (ten sam co w self.mobs) - PER BUILD. GameCoreTop zweryf. na zywo.
+SPEED_OFFSETS = {
+    # Efekt zweryfikowany W GRZE (odwrotnie niz statyczne nazwy subagenta): +0x498 = RUCH, +0x49C = ATAK.
+    "gamecoretop.exe": dict(mov=0x498, atk=0x49C),
+    # vCore: do uzupelnienia (inny build).
+}
 # Stabilny odczyt HP przez wskaznik singletona CPythonPlayer - dla buildow bez RTTI, gdzie skan
 # pamieci zawodzi (np. vCore: tablica 8-bajtowa, dolny dword XOR). RVA/offsety sa SPECYFICZNE DLA
 # DANEGO BUILDU exe (znalezione analiza binarki). value(i)=*(base+singleton_rva)+array_off+i*stride ^key.
@@ -359,6 +367,12 @@ class RadarMap:
         self._route_idx = 0
         self._last_plan = 0.0
         self._coll_cache = (0.0, [])  # (czas, lista (wx,wy) zablokowanych pol w poblizu) - do rysowania
+        # speedhack (eksperyment): zapis mnoznikow predkosci do wlasnej postaci (CActorInstance)
+        self.speed_off = SPEED_OFFSETS.get(self.proc_name.lower())
+        self.speed_on = False
+        self.move_mult = 1.0
+        self.atk_mult = 1.0
+        self.self_actor = None        # wskaznik CActorInstance wlasnej postaci (do zapisu predkosci)
 
         self.root = root
         # Przywroc pozycje i rozmiar okna z poprzedniej sesji (albo domyslny wysoki prostokat).
@@ -380,6 +394,9 @@ class RadarMap:
         self.autoloot_var = tk.BooleanVar(value=self.autoloot_on)
         self.loot_var = tk.DoubleVar(value=self.loot_interval)
         self.autowalk_var = tk.BooleanVar(value=self.autowalk_on)
+        self.speed_var = tk.BooleanVar(value=self.speed_on)
+        self.movx_var = tk.DoubleVar(value=self.move_mult)
+        self.atkx_var = tk.DoubleVar(value=self.atk_mult)
 
         self.canvas = tk.Canvas(root, width=CANVAS, height=CANVAS, bg="#0b0f0b", highlightthickness=0)
         panel = tk.Frame(root, bg="#0b0f0b")
@@ -410,6 +427,10 @@ class RadarMap:
         _mkscale("Loot co s", self.loot_var, 0.2, 2.0, 0.1, self._on_loot_cd, "#e9d5a0")
         _chk("Auto-chodzenie (Ctrl+klik=punkt, C=czysc)", self.autowalk_var,
              self._on_autowalk_check, "#9fd0ff", "#cfe8ff")
+        _chk("Speedhack (test - serwer moze ucinac)", self.speed_var,
+             self._on_speed_check, "#ff9f1a", "#ffd79a")
+        _mkscale("Ruch x", self.movx_var, 1.0, 3.0, 0.1, self._on_movx, "#ff9f1a")
+        _mkscale("Atak x", self.atkx_var, 1.0, 3.0, 0.1, self._on_atkx, "#ff9f1a")
 
         # Kolejnosc pakowania wazna: PANEL na dole, canvas wypelnia reszte NAD nim.
         panel.pack(side="bottom", fill="x")
@@ -502,6 +523,15 @@ class RadarMap:
 
     def _on_loot_cd(self, val):
         self.loot_interval = float(val)
+
+    def _on_speed_check(self):
+        self.speed_on = bool(self.speed_var.get())
+
+    def _on_movx(self, val):
+        self.move_mult = float(val)
+
+    def _on_atkx(self, val):
+        self.atk_mult = float(val)
 
     def _on_autowalk_check(self):
         self.autowalk_on = bool(self.autowalk_var.get())
@@ -781,6 +811,23 @@ class RadarMap:
         self.mobs = mobs
         # inni gracze: aktorzy z modelem /pc/ (liczone tu, raz na skan - nie co klatke)
         self.pc_objs = set(o for o in mobs if self._actor_is_pc(o))
+        # wlasna postac (do speedhacka): aktor najblizszy graczowi (ten sam, ktory _iter_mobs odfiltrowuje)
+        self.self_actor = None
+        hx0, hy0 = self._hero_world()
+        if hx0 is not None:
+            mob_x = self.off["mob_x"]
+            bd, best = 1e18, None
+            for o in mobs:
+                try:
+                    x = self.pm.read_float(o + mob_x)
+                    y = self.pm.read_float(o + mob_x + 4)
+                except Exception:
+                    continue
+                dd = math.hypot(x - hx0, y - hy0)
+                if dd < bd:
+                    bd, best = dd, o
+            if best is not None and bd < 100:
+                self.self_actor = best
         # aktorzy metinow (vnum 8xxx): zrodlo NAZWY/POZIOMU dla metinow rysowanych z efektow.
         # (ich pozycja bywa niestabilna - sluzy tylko do dopasowania, gdy typow jest kilka)
         metin_actors = []
@@ -1087,6 +1134,21 @@ class RadarMap:
                 self._autowalk_step()
             except Exception as e:
                 print("[walk] blad petli:", e)
+            try:
+                self._speed_step()
+            except Exception as e:
+                print("[speed] blad petli:", e)
+
+    def _speed_step(self):
+        """EKSPERYMENT: zapisuje mnozniki predkosci do wlasnej postaci co petle (serwer je nadpisuje).
+        Prawdopodobnie serwer utnie realny efekt (gumka/odrzucone ataki) - to test walidacji (faza obrony)."""
+        if not self.speed_on or not self.speed_off or self.self_actor is None:
+            return
+        try:
+            self.pm.write_float(self.self_actor + self.speed_off["mov"], float(self.move_mult))
+            self.pm.write_float(self.self_actor + self.speed_off["atk"], float(self.atk_mult))
+        except Exception:
+            pass
 
     def _autowalk_step(self):
         """Idzie po waypointach (zapetlonych). Do kazdego liczy trase A* po REALNEJ siatce kolizji
