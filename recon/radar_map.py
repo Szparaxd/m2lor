@@ -147,15 +147,26 @@ POTION_POLL = 0.07        # s - jak czesto dedykowana petla sprawdza HP (szybka 
 LOOT_INTERVAL = 0.5       # s - odstep miedzy probami podniesienia (suwak "Loot co s")
 # Auto-chodzenie (funkcja 3): postac idzie po liscie waypointow (wsp. swiata). Ruch natywny przez
 # hook per-klatka (vCore): DLL wola NEW_MoveToDestPixelPositionDirection. Pakiety ruchu leca same.
-WALK_REACH = 150.0        # jedn. swiata: tak blisko celu = waypoint osiagniety -> nastepny
-WALK_RESEND = 0.5         # s: co ile ponawiac !goto do biezacego celu (keep-alive/korekta)
+WALK_REACH = 250.0        # jedn. swiata: tak blisko celu/wezla = idz dalej (wiekszy = plynniej, mniej stopow)
+WALK_RESEND = 0.3         # s: co ile ponawiac !goto do biezacego celu (czesciej = plynniej)
 WALK_STUCK_SEC = 1.5      # s: brak postepu tyle -> wejdz w tryb omijania przeszkody
 # Omijanie przeszkod bez mapy kolizji (podazanie wzdluz sciany): przy utknieciu kierujemy postac pod
 # katem do celu (60/90/120/150 stopni w bok) i trzymamy ten kurs; gdy postac SIE NIE RUSZA, obracamy
 # kurs dalej, a gdy wyczerpiemy katy - zmieniamy strone. Konczymy, gdy zblizymy sie do celu bardziej
 # niz w chwili utkniecia; poddajemy sie (pomijamy waypoint) po WALK_GIVEUP s lub 2 zmianach strony.
-WALK_PLAN_SEC = 1.5       # s: co ile przeliczac trase A* do biezacego waypointu (replan)
-WALK_STUCK_REPLAN = 2.0   # s: brak postepu tyle -> wymus replan trasy
+WALK_LOOKAHEAD = 500.0    # jedn.: celuj wezel trasy tak daleko DO PRZODU (konne luki zamiast krazenia)
+WALK_PLAN_SEC = 2.5       # s: co ile przeliczac trase A* do biezacego waypointu (rzadziej = mniej szarpania)
+WALK_STUCK_REPLAN = 1.5   # s: brak postepu tyle -> wymus replan trasy
+WALK_FIGHT_RANGE = 6000.0 # jedn.: w drodze zatrzymaj sie na metina/bossa/specjalnego w tym promieniu
+# Zamek na cel: raz zaczety cel bijemy do konca. Ale gdy przez ENGAGE_TIMEOUT s NIE ZBLIZAMY sie do niego
+# (nieosiagalny - za sciana / wbici) -> porzucamy i na ENGAGE_COOL s ignorujemy ten VID (nie wybieramy go
+# od razu ponownie), zeby nie krazyc w kolko wokol jednego nieosiagalnego celu.
+WALK_ENGAGE_TIMEOUT = 7.0 # s: tyle bez postepu do celu (poza zasiegiem) -> porzuc cel
+WALK_ENGAGE_COOL = 12.0   # s: tak dlugo pomijamy porzucony VID przy wyborze nowego celu
+# Odblokowanie (unstick): gdy postac realnie stoi mimo wysylanego ruchu (np. wbita w ruszajacego sie moba),
+# wysylamy krotki krok w BOK (naprzemiennie), zeby sie uwolnic. Dziala i dla chodzenia, i dla dochodzenia.
+WALK_MOVE_EPS = 50.0      # jedn.: mniejszy ruch od ostatniego sprawdzenia = "stoi"
+WALK_UNSTICK_SEC = 0.8    # s: tyle bez ruchu -> krok w bok
 # Speedhack (EKSPERYMENT - test czy serwer waliduje; patrz ANALIZA): m_fMovSpd/m_fAtkSpd to mnozniki
 # animacji w CActorInstance (1.0=100%). Serwer nadpisuje je przy char_update -> re-aplikujemy co petle.
 # Offsety WZGLEDEM wskaznika CActorInstance (ten sam co w self.mobs) - PER BUILD. GameCoreTop zweryf. na zywo.
@@ -174,6 +185,7 @@ FARM_OFFSETS = {
 }
 FARM_RADIUS = 2500.0      # domyslny promien okregu farmienia (jedn. swiata; ~25 px minimapy)
 FARM_MELEE = 300.0        # jedn. swiata: tak blisko celu = oddaj atak klientowi (dalej - dochodzimy A*)
+FARM_BOSS_RANGE = 10000.0 # jedn.: bossy scigamy nawet POZA okregiem farmy (rzadkie, cenne), do tego zasiegu
 # Stabilny odczyt HP przez wskaznik singletona CPythonPlayer - dla buildow bez RTTI, gdzie skan
 # pamieci zawodzi (np. vCore: tablica 8-bajtowa, dolny dword XOR). RVA/offsety sa SPECYFICZNE DLA
 # DANEGO BUILDU exe (znalezione analiza binarki). value(i)=*(base+singleton_rva)+array_off+i*stride ^key.
@@ -366,6 +378,7 @@ class RadarMap:
         # auto-chodzenie (funkcja 3): waypointy w wsp. swiata; petla idzie po nich (tylko vCore/hook).
         # Ctrl+LPM dodaje waypoint, [C] czysci, [G]/checkbox start-stop.
         self.autowalk_on = False
+        self.walk_fight = False       # w drodze zatrzymaj sie i zbij metina/bossa w poblizu
         self.path = []                # [(wx, wy)] - waypointy uzytkownika (Ctrl+klik)
         self.walk_idx = 0
         self._last_goto = 0.0
@@ -376,6 +389,9 @@ class RadarMap:
         self._route = []              # aktualna trasa A* do biezacego waypointu [(wx,wy)]
         self._route_idx = 0
         self._last_plan = 0.0
+        self._um_pos = None           # (wx,wy) do wykrywania braku ruchu (unstick: krok w bok)
+        self._um_t = 0.0
+        self._um_side = 1
         self._coll_cache = (0.0, [])  # (czas, lista (wx,wy) zablokowanych pol w poblizu) - do rysowania
         # speedhack (eksperyment): zapis mnoznikow predkosci do wlasnej postaci (CActorInstance)
         self.speed_off = SPEED_OFFSETS.get(self.proc_name.lower())
@@ -391,6 +407,11 @@ class RadarMap:
         self._last_farm = 0.0
         self.farm_metin = True         # bij metiny (najwyzszy priorytet)
         self.farm_boss = True          # bij bossy z priorytetem (nad zwyklymi mobami)
+        self._engaged_vid = 0          # "zamek na cel": VID celu w trakcie walki (konczymy go, nie zmieniamy)
+        self._engaged_since = 0.0      # kiedy zaczeto biezacy cel (timeout porzucenia)
+        self._engaged_best = 1e18      # najlepszy (min) dystans do celu (wykrycie braku postepu)
+        self._mob_snap = (0.0, [], {}) # (czas, lista mobow, dict vid->(wx,wy,is_metin)) - 1 skan na krok
+        self._engage_cool = {}         # vid -> czas, do kiedy pomijac porzucony (nieosiagalny) cel
 
         self.root = root
         # Przywroc pozycje i rozmiar okna z poprzedniej sesji (albo domyslny wysoki prostokat).
@@ -412,6 +433,7 @@ class RadarMap:
         self.autoloot_var = tk.BooleanVar(value=self.autoloot_on)
         self.loot_var = tk.DoubleVar(value=self.loot_interval)
         self.autowalk_var = tk.BooleanVar(value=self.autowalk_on)
+        self.walkfight_var = tk.BooleanVar(value=self.walk_fight)
         self.speed_var = tk.BooleanVar(value=self.speed_on)
         self.movx_var = tk.DoubleVar(value=self.move_mult)
         self.atkx_var = tk.DoubleVar(value=self.atk_mult)
@@ -449,6 +471,7 @@ class RadarMap:
         _mkscale("Loot co s", self.loot_var, 0.2, 2.0, 0.1, self._on_loot_cd, "#e9d5a0")
         _chk("Auto-chodzenie (Ctrl+klik=punkt, C=czysc)", self.autowalk_var,
              self._on_autowalk_check, "#9fd0ff", "#cfe8ff")
+        _chk("  W drodze bij metiny/bossy", self.walkfight_var, self._on_walkfight, "#9fd0ff", "#cfe8ff")
         _chk("Auto-farm (okrag wokol postaci)", self.farm_var, self._on_farm_check, "#ff6a6a", "#ffb0b0")
         _mkscale("Promien", self.farmr_var, 500, 6000, 100, self._on_farmr, "#ff6a6a")
         _chk("  Bij metiny (priorytet)", self.farm_metin_var, self._on_farm_metin, "#ffe14d", "#fff0a0")
@@ -552,6 +575,7 @@ class RadarMap:
 
     def _on_farm_check(self):
         self.farm_on = bool(self.farm_var.get())
+        self._reset_combat()
         if self.farm_on:
             hx, hy = self._hero_world()
             self.farm_center = (hx, hy) if hx is not None else None   # srodek = pozycja przy wlaczeniu
@@ -577,8 +601,12 @@ class RadarMap:
     def _on_atkx(self, val):
         self.atk_mult = float(val)
 
+    def _on_walkfight(self):
+        self.walk_fight = bool(self.walkfight_var.get())
+
     def _on_autowalk_check(self):
         self.autowalk_on = bool(self.autowalk_var.get())
+        self._reset_combat()
         if self.autowalk_on:
             self.walk_idx = 0
             self._walk_prog = None
@@ -1033,6 +1061,7 @@ class RadarMap:
         elif k == "g":
             self.autowalk_on = not self.autowalk_on
             self.autowalk_var.set(self.autowalk_on)     # start/stop auto-chodzenia
+            self._reset_combat()
             if self.autowalk_on:
                 self.walk_idx = 0
                 self._walk_prog = None
@@ -1049,6 +1078,7 @@ class RadarMap:
         elif k == "v":
             self.farm_on = not self.farm_on                 # auto-farm wl/wyl
             self.farm_var.set(self.farm_on)
+            self._reset_combat()
             if self.farm_on:
                 hx, hy = self._hero_world()
                 self.farm_center = (hx, hy) if hx is not None else None
@@ -1204,41 +1234,97 @@ class RadarMap:
                 print("[farm] blad petli:", e)
 
     def _metin_targets(self):
-        """Metiny do bicia: pozycja z EFEKTU (stabilna) + VID z najblizszego aktora-metina."""
-        acts = [(x, y, vid) for (vnum, nm, x, y, vid) in self.metin_actors if x is not None and vid]
-        out = []
-        for mx, my, _ in self.metins:
-            if not acts:
+        """Metiny do bicia: (wx, wy, vid) wprost z aktorow-metinow (vnum 8xxx) - maja VID i pozycje.
+        (Prostsze i pewniejsze niz parowanie z efektami; klient i tak dochodzi do metina po VID.)"""
+        return [(x, y, vid) for (vnum, nm, x, y, vid) in self.metin_actors if x is not None and vid]
+
+    def _mobs_snapshot(self, hx, hy):
+        """JEDEN skan aktorow na krok (cache ~0.12 s). Zwraca (lista, dict):
+          lista = [(wx, wy, vnum, is_pc, vid), ...]  (vid=0 gdy brak offsetu),
+          dict  = {vid: (wx, wy, is_metin)}  (moby + metiny, do szybkiego _find_by_vid).
+        Wszyscy konsumenci w jednym kroku (walka/wybor celu/przeszkody) biora ten sam snapshot -
+        zamiast 3-4x skanowac pamiec. Mniej odczytow = plynniejsza petla (kon mniej dryfuje)."""
+        now = time.time()
+        if now - self._mob_snap[0] < 0.12:
+            return self._mob_snap[1], self._mob_snap[2]
+        lst, v2p = [], {}
+        vid_off = self.farm_off["vid"] if self.farm_off else None
+        for mx, my, vnum, is_pc, o in self._iter_mobs(hx, hy):
+            vid = 0
+            if vid_off is not None:
+                try:
+                    vid = self.pm.read_uint(o + vid_off)
+                except Exception:
+                    vid = 0
+            lst.append((mx, my, vnum, is_pc, vid))
+            if vid and not is_pc:
+                v2p[vid] = (mx, my, False)
+        for mx, my, mvid in self._metin_targets():
+            if mvid:
+                v2p[mvid] = (mx, my, True)
+        self._mob_snap = (now, lst, v2p)
+        return lst, v2p
+
+    def _vid_blocked(self, vid):
+        """True gdy VID zostal niedawno porzucony jako nieosiagalny - pomijamy go przy wyborze celu,
+        zeby nie krazyc w kolko wokol tego samego celu za sciana. Wpis wygasa po WALK_ENGAGE_COOL s."""
+        t = self._engage_cool.get(vid)
+        if t is None:
+            return False
+        if time.time() > t:
+            del self._engage_cool[vid]
+            return False
+        return True
+
+    def _route_aim(self, route, idx, hx, hy):
+        """Cel ruchu z WYPRZEDZENIEM. Zamiast celowac w najblizszy wezel trasy, celuje w najdalszy wezel,
+        ktory (a) jest w promieniu WALK_LOOKAHEAD i (b) ma wolna linie wzroku z biezacej pozycji.
+        Kon ma promien skretu - celujac dalej do przodu robi lagodne luki zamiast krazenia wokol bliskiego
+        punktu; LOS pilnuje, by nie scinac rogu w sciane."""
+        if not route:
+            return None
+        n = len(route)
+        j = min(idx, n - 1)
+        aim = route[j]
+        while j + 1 < n:
+            nx, ny = route[j + 1]
+            if math.hypot(nx - hx, ny - hy) > WALK_LOOKAHEAD:
                 break
-            a = min(acts, key=lambda t: math.hypot(t[0] - mx, t[1] - my))
-            out.append((mx, my, a[2]))
-        return out
+            if self.collision.ok and not self.collision.line_clear(hx, hy, nx, ny):
+                break
+            aim = route[j + 1]
+            j += 1
+        return aim
 
     def _farm_pick_target(self, hx, hy):
         """Najlepszy cel w okregu wg priorytetu metin>boss>mob: (vid, tx, ty, is_metin) albo None."""
         cx, cy = self.farm_center
         R = self.farm_radius
         cands = []                              # (priorytet, dist_do_gracza, vid, tx, ty, is_metin)
+        mobs, _ = self._mobs_snapshot(hx, hy)
         if self.farm_metin:
             for mx, my, vid in self._metin_targets():
+                if self._vid_blocked(vid):
+                    continue
                 if math.hypot(mx - cx, my - cy) <= R:
                     cands.append((0, math.hypot(mx - hx, my - hy), vid, mx, my, True))
-        vid_off = self.farm_off["vid"]
-        for mx, my, vnum, is_pc, o in self._iter_mobs(hx, hy):
-            if is_pc:
+        for mx, my, vnum, is_pc, vid in mobs:
+            if is_pc or not vid or self._vid_blocked(vid):
                 continue
             cls = self._classify(vnum, is_pc)
             if cls == "npc":
                 continue
-            if math.hypot(mx - cx, my - cy) > R:
+            is_boss = cls in ("boss", "king") and self.farm_boss
+            in_circle = math.hypot(mx - cx, my - cy) <= R
+            if is_boss:                          # bossy scigamy TEZ poza okregiem (do FARM_BOSS_RANGE)
+                if math.hypot(mx - hx, my - hy) > FARM_BOSS_RANGE:
+                    continue
+                pr = 1
+            elif not in_circle:                  # specjalne/moby tylko w okregu
                 continue
-            pr = 1 if (cls in ("boss", "king") and self.farm_boss) else 2
-            try:
-                vid = self.pm.read_uint(o + vid_off)
-            except Exception:
-                continue
-            if vid:
-                cands.append((pr, math.hypot(mx - hx, my - hy), vid, mx, my, False))
+            else:
+                pr = 2 if cls == "special" else 3
+            cands.append((pr, math.hypot(mx - hx, my - hy), vid, mx, my, False))
         if not cands:
             return None
         cands.sort(key=lambda c: (c[0], c[1]))
@@ -1246,9 +1332,9 @@ class RadarMap:
         return vid, tx, ty, ism
 
     def _farm_step(self):
-        """Auto-farm: wybiera cel (metin>boss>mob) w okregu. W zasiegu oddaje atak klientowi (wpis VID do
-        auto-attack target). Poza zasiegiem SAM prowadzi postac A* (omijajac metiny) - bez prostego
-        podejscia klienta, ktore wbija sie w metiny/przeszkody."""
+        """Auto-farm: wybiera cel (metin>boss>special>mob; bossy tez poza okregiem). ZAMEK NA CEL: raz zaczety
+        cel bije do konca (nie przerywa na rzecz wyzszego priorytetu). W zasiegu oddaje atak klientowi,
+        poza zasiegiem prowadzi A* (omijajac metiny+moby) z odblokowaniem."""
         if not self.farm_on or not self.farm_off or self.player_obj is None or self.farm_center is None:
             return
         now = time.time()
@@ -1258,38 +1344,141 @@ class RadarMap:
         hx, hy = self._hero_world()
         if hx is None:
             return
-        va = self.player_obj + self.farm_off["autoatk"]
-        tgt = self._farm_pick_target(hx, hy)
+        self._combat_tick(hx, hy, self._farm_pick_target)
+
+    def _find_by_vid(self, vid, hx, hy):
+        """Biezaca pozycja celu po VID: (wx,wy,is_metin) albo None gdy zniknal/padl (ze snapshotu)."""
+        _, v2p = self._mobs_snapshot(hx, hy)
+        return v2p.get(vid)
+
+    def _combat_tick(self, hx, hy, pick_fn):
+        """Wspolna logika walki z ZAMKIEM NA CEL. Zwraca True gdy walczymy (nie przerywac chodzenia).
+        Dopoki zablokowany cel zyje I ROBIMY DO NIEGO POSTEP - bijemy go. Gdy padnie/zniknie albo przez
+        WALK_ENGAGE_TIMEOUT s nie zblizamy sie do niego (nieosiagalny) -> zwalniamy zamek (i na chwile
+        pomijamy ten VID), by nie krazyc w kolko. Nowy cel wybiera pick_fn."""
+        now = time.time()
+        if self._engaged_vid:
+            pos = self._find_by_vid(self._engaged_vid, hx, hy)
+            if pos is not None:
+                d = math.hypot(pos[0] - hx, pos[1] - hy)
+                if d < self._engaged_best - 30:      # realny postep -> odswiez licznik bez-postepu
+                    self._engaged_best = d
+                    self._engaged_since = now
+                if d > FARM_MELEE and now - self._engaged_since > WALK_ENGAGE_TIMEOUT:
+                    self._engage_cool[self._engaged_vid] = now + WALK_ENGAGE_COOL  # porzuc nieosiagalny
+                    self._engaged_vid = 0
+                else:
+                    self._engage(hx, hy, self._engaged_vid, pos[0], pos[1], pos[2])
+                    return True
+            else:
+                self._engaged_vid = 0               # cel padl/zniknal -> mozna wybrac nowy
+        tgt = pick_fn(hx, hy)
         if tgt is None:
-            try:                                # brak celu w okregu -> nie trzymaj starego
-                if self.pm.read_uint(va) != 0:
-                    self.pm.write_uint(va, 0)
-            except Exception:
-                pass
-            return
-        vid, tx, ty, is_metin = tgt
-        d = math.hypot(tx - hx, ty - hy)
-        if d <= FARM_MELEE:                      # w zasiegu -> atak klienta w miejscu
+            self._clear_autoattack()
+            return False
+        vid, tx, ty, ism = tgt
+        if vid != self._engaged_vid:                 # nowy zamek: ten cel konczymy; zaczynamy liczyc postep
+            self._engaged_vid = vid
+            self._engaged_since = now
+            self._engaged_best = math.hypot(tx - hx, ty - hy)
+        self._engage(hx, hy, vid, tx, ty, ism)
+        return True
+
+    def _reset_combat(self):
+        """Zwolnij zamek na cel + stan odblokowania (nudge). Wolane przy wl/wyl farmy/chodzenia,
+        by stary (nieaktualny) cel/licznik utkniecia nie przenosil sie miedzy sesjami."""
+        self._engaged_vid = 0
+        self._engaged_since = 0.0
+        self._engaged_best = 1e18
+        self._um_pos = None
+
+    def _clear_autoattack(self):
+        try:
+            va = self.player_obj + self.farm_off["autoatk"]
+            if self.pm.read_uint(va) != 0:
+                self.pm.write_uint(va, 0)
+        except Exception:
+            pass
+
+    def _entity_obstacles(self, hx, hy, include_mobs, exclude=None, exclude_r=200.0):
+        """Pozycje encji jako przeszkody dla A*: metiny (zawsze) + moby (gdy include_mobs).
+        exclude: punkt (wx,wy), wokol ktorego nie dodajemy przeszkod (cel ataku)."""
+        obs = [(mx, my) for mx, my, _ in self.metins]
+        if include_mobs:
+            mobs, _ = self._mobs_snapshot(hx, hy)
+            for mx, my, vnum, is_pc, vid in mobs:
+                obs.append((mx, my))
+        if exclude is not None:
+            ex, ey = exclude
+            obs = [(x, y) for (x, y) in obs if math.hypot(x - ex, y - ey) > exclude_r]
+        return obs
+
+    def _stuck_nudge(self, hx, hy, tx, ty):
+        """Gdy postac realnie STOI mimo wysylanego ruchu (wbita w ruszajacego sie moba/przeszkode) - wysyla
+        krok w BOK (prostopadle, naprzemiennie strona), zeby sie uwolnic. Zwraca True gdy zrobil nudge."""
+        now = time.time()
+        if self._um_pos is None or math.hypot(hx - self._um_pos[0], hy - self._um_pos[1]) > WALK_MOVE_EPS:
+            self._um_pos = (hx, hy)
+            self._um_t = now
+            return False
+        if now - self._um_t < WALK_UNSTICK_SEC:
+            return False
+        d = math.hypot(tx - hx, ty - hy) or 1.0
+        dx, dy = (tx - hx) / d, (ty - hy) / d
+        px, py = -dy * self._um_side, dx * self._um_side
+        ax = hx + px * 500 + dx * 200                   # w bok + lekko do przodu
+        ay = hy + py * 500 + dy * 200
+        autopot.goto_native(self.pm.process_id, ax, ay)
+        self._um_side *= -1                             # nastepnym razem druga strona
+        self._um_t = now
+        self._um_pos = (hx, hy)
+        return True
+
+    def _engage(self, hx, hy, vid, tx, ty, is_metin):
+        """Zajmij sie celem: w zasiegu oddaj atak klientowi (wpis VID), poza zasiegiem clear VID i dojdz
+        naszym A* (metiny+moby jako przeszkody, cel i okolica wykluczone) z odblokowaniem. Farm + walka w drodze."""
+        va = self.player_obj + self.farm_off["autoatk"]
+        if math.hypot(tx - hx, ty - hy) <= FARM_MELEE:
             try:
                 if self.pm.read_uint(va) != vid:
                     self.pm.write_uint(va, vid)
             except Exception:
                 pass
+            self._um_pos = None                         # w walce nie liczymy "utkniecia"
             return
-        # poza zasiegiem: wylacz podejscie klienta (bumpuje metiny) i prowadz sami po A*
-        try:
-            if self.pm.read_uint(va) != 0:
-                self.pm.write_uint(va, 0)
-        except Exception:
-            pass
+        self._clear_autoattack()                        # nie pozwol klientowi podchodzic (bumpuje przeszkody)
         if not (self.native_drink or self.dll_exec):
             return
-        obst = [(mx, my) for mx, my, _ in self.metins]
-        if is_metin:                            # celem jest metin -> nie traktuj GO jako przeszkody
-            obst = [(mx, my) for (mx, my) in obst if math.hypot(mx - tx, my - ty) > 150]
+        if self._stuck_nudge(hx, hy, tx, ty):           # wbity w moba -> krok w bok
+            return
+        obst = self._entity_obstacles(hx, hy, include_mobs=True, exclude=(tx, ty), exclude_r=350.0)
         route = self.collision.find_path(hx, hy, tx, ty, extra_blocked=obst) if self.collision.ok else None
-        nxt = route[0] if route else (tx, ty)
+        nxt = self._route_aim(route, 0, hx, hy) if route else (tx, ty)  # celuj z wyprzedzeniem (konne luki)
         autopot.goto_native(self.pm.process_id, nxt[0], nxt[1])
+
+    def _nearby_fight_target(self, hx, hy, R):
+        """Metin/boss/specjalny w promieniu R od postaci (walka w drodze): (vid,tx,ty,is_metin) albo None.
+        Priorytet: metin > boss > specjalny. Zwykle moby pomijane (w drodze bijemy tylko te wyroznione)."""
+        cands = []
+        mobs, _ = self._mobs_snapshot(hx, hy)
+        for mx, my, vid in self._metin_targets():
+            if self._vid_blocked(vid):
+                continue
+            if math.hypot(mx - hx, my - hy) <= R:
+                cands.append((0, math.hypot(mx - hx, my - hy), vid, mx, my, True))
+        PRI = {"boss": 1, "king": 1, "special": 2}
+        for mx, my, vnum, is_pc, vid in mobs:
+            if is_pc or not vid or self._vid_blocked(vid):
+                continue
+            pr = PRI.get(self._classify(vnum, is_pc))
+            if pr is None or math.hypot(mx - hx, my - hy) > R:
+                continue
+            cands.append((pr, math.hypot(mx - hx, my - hy), vid, mx, my, False))
+        if not cands:
+            return None
+        cands.sort(key=lambda c: (c[0], c[1]))
+        _, _, vid, tx, ty, ism = cands[0]
+        return vid, tx, ty, ism
 
     def _speed_step(self):
         """EKSPERYMENT: zapisuje mnozniki predkosci do wlasnej postaci co petle (serwer je nadpisuje).
@@ -1306,7 +1495,8 @@ class RadarMap:
         """Idzie po waypointach (zapetlonych). Do kazdego liczy trase A* po REALNEJ siatce kolizji
         (CMapOutdoor attr) i podaza po niej, omijajac sciany; replan co WALK_PLAN_SEC lub przy utknieciu.
         Gdy brak trasy (cel nieosiagalny) - jedzie wprost (best effort). vCore: hook; GameCoreTop: pending."""
-        if not self.autowalk_on or not self.path:
+        path = list(self.path)                         # snapshot: path moze zmienic mysz w trakcie kroku
+        if not self.autowalk_on or not path:
             return
         if not (self.native_drink or self.dll_exec):   # vCore: hook; GameCoreTop: pending-call
             return
@@ -1316,13 +1506,23 @@ class RadarMap:
         now = time.time()
         self.collision.set_mapout(self.mapout_obj)
         self.collision.refresh()
-        self.walk_idx %= len(self.path)
-        tx, ty = self.path[self.walk_idx]
-        d = math.hypot(tx - hx, ty - hy)
-        if d < WALK_REACH:                          # waypoint osiagniety -> nastepny (petla)
-            self.walk_idx = (self.walk_idx + 1) % len(self.path)
+        # opcja: w drodze zatrzymaj sie i zbij metina/bossa/specjalnego w poblizu (zamek na cel)
+        if self.walk_fight and self.farm_off and self.player_obj is not None:
+            if self._combat_tick(hx, hy, lambda hx, hy: self._nearby_fight_target(hx, hy, WALK_FIGHT_RANGE)):
+                self._walk_prog = None          # walczymy -> nie progresuj waypointa
+                return
+        self.walk_idx %= len(path)
+        tx, ty = path[self.walk_idx]
+        # przejdz przez osiagniete waypointy BEZ zatrzymania (od razu kieruj do nastepnego = plynnie)
+        adv = 0
+        while math.hypot(tx - hx, ty - hy) < WALK_REACH and adv < len(path):
+            self.walk_idx = (self.walk_idx + 1) % len(path)
+            tx, ty = path[self.walk_idx]
             self._walk_prog = None
             self._route = []
+            adv += 1
+        d = math.hypot(tx - hx, ty - hy)
+        if d < WALK_REACH:                           # jedyny/wszystkie punkty tuz obok - nic do roboty
             return
 
         # detekcja utkniecia: brak postepu -> wymus replan (siatka moze sie zmienic / trasa nieaktualna)
@@ -1332,9 +1532,9 @@ class RadarMap:
             self._last_plan = 0.0
             self._walk_prog = (now, d)
 
-        # (re)plan trasy A* po realnej siatce kolizji + metiny jako przeszkody, okresowo albo gdy brak trasy
+        # (re)plan trasy A* po realnej siatce kolizji + METINY I MOBY jako przeszkody, okresowo/gdy brak trasy
         if self.collision.ok and (not self._route or now - self._last_plan > WALK_PLAN_SEC):
-            obst = [(mx, my) for mx, my, _ in self.metins]
+            obst = self._entity_obstacles(hx, hy, include_mobs=True)
             p = self.collision.find_path(hx, hy, tx, ty, extra_blocked=obst)
             self._last_plan = now
             self._route = p or []
@@ -1350,8 +1550,10 @@ class RadarMap:
             if self._route_idx >= len(self._route):
                 self._route = []                    # przeszlismy trase -> replan nastepnym razem
             else:
-                tgt = self._route[self._route_idx]
+                tgt = self._route_aim(self._route, self._route_idx, hx, hy)  # celuj z wyprzedzeniem (luki)
 
+        if self._stuck_nudge(hx, hy, tgt[0], tgt[1]):   # wbity w moba/przeszkode -> krok w bok
+            return
         if now - self._last_goto >= WALK_RESEND:     # ponawiaj biezacy cel (keep-alive/korekta)
             autopot.goto_native(self.pm.process_id, tgt[0], tgt[1])
             self._last_goto = now

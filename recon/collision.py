@@ -111,6 +111,9 @@ class Collision:
             for ex, ey in extra_blocked:
                 extra_cells.add((int(ex) // CELL, int(ey) // CELL))
             extra_cells.discard((gcx, gcy))     # nie blokuj komorki celu
+            for dj in (-1, 0, 1):               # ani okolicy STARTU: mob tuz przy postaci
+                for di in (-1, 0, 1):           # zamurowalby wszystkie wyjscia -> brak trasy -> utkniecie
+                    extra_cells.discard((scx + di, scy + dj))
         # siatka blokad w bboxie (+ opcjonalne pogrubienie przeszkod o 'inflate' komorek)
         raw = {}
         for gy_ in range(miny, maxy + 1):
@@ -191,6 +194,18 @@ class Collision:
                     if c in blk and not blk[c]:
                         return c
         return None
+
+    def line_clear(self, x0, y0, x1, y1):
+        """LOS w WSPOLRZEDNYCH SWIATA (nie komorkach): probkuje odcinek co pol komorki wprost z mapy.
+        True gdy zadne probkowane pole nie jest zablokowane. Uzywane do celowania z wyprzedzeniem
+        (aim) - mozna celowac dalej do przodu tylko gdy droga na wprost jest wolna."""
+        d = math.hypot(x1 - x0, y1 - y0)
+        n = max(1, int(d / (CELL * 0.5)))
+        for i in range(n + 1):
+            t = i / n
+            if self.is_block(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t):
+                return False
+        return True
 
     def _los_clear(self, c0, c1, blk):
         """Bresenham: czy linia komorek c0->c1 jest wolna od blokad."""
