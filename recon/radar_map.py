@@ -164,6 +164,15 @@ SPEED_OFFSETS = {
     "gamecoretop.exe": dict(mov=0x498, atk=0x49C),
     # vCore: do uzupelnienia (inny build).
 }
+# Auto-farm: wpisujemy VID moba do CPythonPlayer.m_dwAutoAttackTargetVID (off "autoatk" wzgl. obiektu
+# CPythonPlayer = self.player_obj); klient (__Update_AutoAttack) sam podchodzi, bije i czysci po smierci.
+# VID moba czytamy z CActorInstance (off "vid" wzgl. wskaznika z self.mobs). Offsety PER BUILD (do RE).
+FARM_OFFSETS = {
+    # zweryfikowane na zywo: VID moba = CActorInstance+0x558; auto-attack target = CPythonPlayer+0x50.
+    "gamecoretop.exe": dict(vid=0x558, autoatk=0x50),
+    # vCore: do uzupelnienia (inny build).
+}
+FARM_RADIUS = 2500.0      # domyslny promien okregu farmienia (jedn. swiata; ~25 px minimapy)
 # Stabilny odczyt HP przez wskaznik singletona CPythonPlayer - dla buildow bez RTTI, gdzie skan
 # pamieci zawodzi (np. vCore: tablica 8-bajtowa, dolny dword XOR). RVA/offsety sa SPECYFICZNE DLA
 # DANEGO BUILDU exe (znalezione analiza binarki). value(i)=*(base+singleton_rva)+array_off+i*stride ^key.
@@ -373,6 +382,12 @@ class RadarMap:
         self.move_mult = 1.0
         self.atk_mult = 1.0
         self.self_actor = None        # wskaznik CActorInstance wlasnej postaci (do zapisu predkosci)
+        # auto-farm: okrag wokol punktu startu, bijemy moby w srodku (wpis VID do auto-attack target)
+        self.farm_off = FARM_OFFSETS.get(self.proc_name.lower())
+        self.farm_on = False
+        self.farm_radius = FARM_RADIUS
+        self.farm_center = None        # (wx, wy) - srodek okregu (ustawiany przy wlaczeniu)
+        self._last_farm = 0.0
 
         self.root = root
         # Przywroc pozycje i rozmiar okna z poprzedniej sesji (albo domyslny wysoki prostokat).
@@ -397,6 +412,8 @@ class RadarMap:
         self.speed_var = tk.BooleanVar(value=self.speed_on)
         self.movx_var = tk.DoubleVar(value=self.move_mult)
         self.atkx_var = tk.DoubleVar(value=self.atk_mult)
+        self.farm_var = tk.BooleanVar(value=self.farm_on)
+        self.farmr_var = tk.IntVar(value=int(self.farm_radius))
 
         self.canvas = tk.Canvas(root, width=CANVAS, height=CANVAS, bg="#0b0f0b", highlightthickness=0)
         panel = tk.Frame(root, bg="#0b0f0b")
@@ -427,6 +444,8 @@ class RadarMap:
         _mkscale("Loot co s", self.loot_var, 0.2, 2.0, 0.1, self._on_loot_cd, "#e9d5a0")
         _chk("Auto-chodzenie (Ctrl+klik=punkt, C=czysc)", self.autowalk_var,
              self._on_autowalk_check, "#9fd0ff", "#cfe8ff")
+        _chk("Auto-farm (okrag wokol postaci)", self.farm_var, self._on_farm_check, "#ff6a6a", "#ffb0b0")
+        _mkscale("Promien", self.farmr_var, 500, 6000, 100, self._on_farmr, "#ff6a6a")
         _chk("Speedhack (test - serwer moze ucinac)", self.speed_var,
              self._on_speed_check, "#ff9f1a", "#ffd79a")
         _mkscale("Ruch x", self.movx_var, 1.0, 3.0, 0.1, self._on_movx, "#ff9f1a")
@@ -523,6 +542,18 @@ class RadarMap:
 
     def _on_loot_cd(self, val):
         self.loot_interval = float(val)
+
+    def _on_farm_check(self):
+        self.farm_on = bool(self.farm_var.get())
+        if self.farm_on:
+            hx, hy = self._hero_world()
+            self.farm_center = (hx, hy) if hx is not None else None   # srodek = pozycja przy wlaczeniu
+            self._last_farm = 0.0
+        else:
+            self.farm_center = None
+
+    def _on_farmr(self, val):
+        self.farm_radius = float(val)
 
     def _on_speed_check(self):
         self.speed_on = bool(self.speed_var.get())
@@ -996,6 +1027,15 @@ class RadarMap:
             print("[walk] trasa wyczyszczona")
         elif k == "b":
             self.show_collision = not self.show_collision   # siatka kolizji wl/wyl
+        elif k == "v":
+            self.farm_on = not self.farm_on                 # auto-farm wl/wyl
+            self.farm_var.set(self.farm_on)
+            if self.farm_on:
+                hx, hy = self._hero_world()
+                self.farm_center = (hx, hy) if hx is not None else None
+                self._last_farm = 0.0
+            else:
+                self.farm_center = None
         elif k == "j":
             self.dll_status = self._inject_dll()
         elif k == "bracketleft":
@@ -1096,6 +1136,7 @@ class RadarMap:
                 c.create_text(sx, sy - 16, fill=col, text=nm, font=("Consolas", 9, "bold"))
         self._hits = hits
         self._draw_collision(c, hx, hy)                   # siatka kolizji (pod trasa i graczem)
+        self._draw_farm(c, hx, hy)                        # okrag auto-farm
         self._draw_path(c, hx, hy)                        # trasa auto-chodzenia (pod graczem)
 
         # gracz
@@ -1138,6 +1179,50 @@ class RadarMap:
                 self._speed_step()
             except Exception as e:
                 print("[speed] blad petli:", e)
+            try:
+                self._farm_step()
+            except Exception as e:
+                print("[farm] blad petli:", e)
+
+    def _farm_step(self):
+        """Auto-farm: jesli nie ma aktywnego celu auto-ataku, wybiera najblizszego moba w okregu i wpisuje
+        jego VID do CPythonPlayer.m_dwAutoAttackTargetVID - klient sam podchodzi, bije i czysci po smierci."""
+        if not self.farm_on or not self.farm_off or self.player_obj is None or self.farm_center is None:
+            return
+        now = time.time()
+        if now - self._last_farm < 0.3:        # nie spamuj co 0.07s
+            return
+        self._last_farm = now
+        va = self.player_obj + self.farm_off["autoatk"]
+        try:
+            cur = self.pm.read_uint(va)
+        except Exception:
+            return
+        if cur != 0:
+            return                              # cel aktywny - klient atakuje, nie przeszkadzamy
+        # brak celu -> wybierz najblizszego moba w okregu (od srodka farmy)
+        cx, cy = self.farm_center
+        hx, hy = self._hero_world()
+        if hx is None:
+            return
+        vid_off = self.farm_off["vid"]
+        best, bd = None, 1e18
+        for mx, my, vnum, is_pc, o in self._iter_mobs(hx, hy):
+            if is_pc or self._classify(vnum, is_pc) in ("npc",):   # tylko moby/bossy, nie gracze/NPC
+                continue
+            if math.hypot(mx - cx, my - cy) > self.farm_radius:     # poza okregiem
+                continue
+            d = math.hypot(mx - hx, my - hy)
+            if d < bd:
+                bd, best = d, o
+        if best is None:
+            return
+        try:
+            vid = self.pm.read_uint(best + vid_off)
+            if vid:
+                self.pm.write_uint(va, vid)     # ustaw cel auto-ataku -> klient atakuje
+        except Exception:
+            pass
 
     def _speed_step(self):
         """EKSPERYMENT: zapisuje mnozniki predkosci do wlasnej postaci co petle (serwer je nadpisuje).
@@ -1236,6 +1321,16 @@ class RadarMap:
             drawn += 1
             if drawn > 1400:                      # zabezpieczenie przed zamuleniem
                 break
+
+    def _draw_farm(self, c, hx, hy):
+        """Rysuje okrag zasiegu auto-farmu (srodek = punkt wlaczenia)."""
+        if not self.farm_on or self.farm_center is None:
+            return
+        cx, cy = self.farm_center
+        sx, sy = self.world_to_canvas(cx, cy, hx, hy)
+        scale = self._follow_scale() if self.mode == "follow" else self._full_scale()
+        r = self.farm_radius / map_assets.WORLD_PER_PX * scale
+        c.create_oval(sx - r, sy - r, sx + r, sy + r, outline="#ff6a6a", width=2)
 
     def _draw_path(self, c, hx, hy):
         """Rysuje trase auto-chodzenia: linie miedzy waypointami + numerowane punkty; biezacy cel wiekszy."""
