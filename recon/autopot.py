@@ -338,6 +338,21 @@ def drink_by_vnum(pid, vnums):
     return send_command(pid, _DRINK_BY_VNUM_TEMPLATE.replace("__VNS__", vns))
 
 
+def pick_close_item(pid):
+    """Podnies NAJBLIZSZY przedmiot z ziemi (<=300 jedn., 500 na koniu) w grze o danym PID.
+    Wola player.PickCloseItem() - klient sam wybiera najblizszy drop w zasiegu i wysyla pakiet
+    pickup (SendItemPickUpPacket). Jedno wywolanie = jeden przedmiot; wielokrotnie = kolejne.
+    Dziala tam, gdzie pending-calls sa opruzniane (GameCoreTop). True gdy komenda dotarla do DLL."""
+    return send_command(pid, "import player\nplayer.PickCloseItem()")
+
+
+def pick_close_item_native(pid):
+    """vCore: podnies najblizszy drop NATYWNIE z hooka per-klatka (bez fokusu, bez Pythona).
+    Wysyla '!pick' - DLL ustawia flage, hook wola CPythonPlayer::PickCloseItem przy najblizszej klatce
+    (ta sama droga co '!drink'). True gdy komenda dotarla do DLL."""
+    return send_command(pid, "!pick")
+
+
 def _project_paths():
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # radar-project\
     return (os.path.join(base, "dll", "autopot.dll"),

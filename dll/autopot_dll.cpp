@@ -115,19 +115,24 @@ static bool resolve_python(void)
 // i w hooku - juz na glownym watku - wolamy NATYWNIE CPythonPlayer::RequestUseLocalQuickSlot.
 // Bufor pakietow nie ma blokad, wiec wolno go ruszac TYLKO z glownego watku - stad hook, nie
 // nasz watek serwera. Radar ustawia flage przez komende potoku "!drink N".
-// RVA SPECYFICZNE DLA TEGO BUILDU vCore.exe (analiza binarki); prolog weryfikowany przed patchem.
-// Cel = app.Process inner (0xB38C0), raz na klatke, glowny watek, BEZ skokow do prologu. NIE uzywac
-// 0xB3750 (RunOneFrame) - ma wewnetrzny `jne 0xB3753` skaczacy w SRODEK 5-bajtowego patcha -> crash.
-#define VCORE_HOOK_RVA             0xB38C0
-#define VCORE_HOOK_RESUME_RVA      0xB38C5
-#define VCORE_RULQS_RVA            0x80FA0        // RequestUseLocalQuickSlot (__thiscall, ret 4)
-#define VCORE_PLAYER_SINGLETON_RVA 0x1B8C664      // *(void**) = CPythonPlayer*
+// RVA SPECYFICZNE DLA BIEZACEGO buildu vCore.exe (2026-10-27 - user przekompilowal, WSZYSTKIE stare
+// wartosci sie przesunely). Zweryfikowane NA ZYWO (prologi w dzialajacym procesie) + statycznie.
+// Hook = CPythonApplication::Process (0xB3A90): petla glowna (PeekMessage) wola go CO KLATKE na glownym
+// watku; prolog 55 8B EC 6A FF (push ebp;mov ebp,esp;push -1) = 5 bajtow, BEZ skokow w patch. NIE uzywac
+// 0xB3750/RunOneFrame (jne w patch -> crash) ani starego 0xB38C0 (po rekompilacji to juz inna funkcja).
+#define VCORE_HOOK_RVA             0xB3A90
+#define VCORE_HOOK_RESUME_RVA      0xB3A95
+#define VCORE_RULQS_RVA            0x81190        // RequestUseLocalQuickSlot (__thiscall, 1 arg, ret 4)
+#define VCORE_PICK_RVA             0x83750        // CPythonPlayer::PickCloseItem (__thiscall, 0 arg, ret)
+#define VCORE_PLAYER_SINGLETON_RVA 0x1B8D674      // *(void**) = CPythonPlayer* (bylo 0x1B8C664)
 static const unsigned char VCORE_PROLOGUE[5] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF};
 
 typedef void(__thiscall *PFN_RULQS)(void *self, unsigned idx);
+typedef void(__thiscall *PFN_PICK)(void *self);     // PickCloseItem - bez argumentow
 
 static unsigned char *g_base = NULL;
 static volatile LONG g_want_drink = 0;
+static volatile LONG g_want_pick = 0;
 static int g_slot = 0;
 static void *g_tramp = NULL;
 
@@ -138,6 +143,13 @@ static __declspec(noinline) void on_frame(void)
         void *self = *(void **)(g_base + VCORE_PLAYER_SINGLETON_RVA);
         if (self)
             ((PFN_RULQS)(g_base + VCORE_RULQS_RVA))(self, (unsigned)g_slot);
+    }
+    // auto-loot: natywne PickCloseItem (podnies najblizszy drop) - tez TYLKO z glownego watku
+    // (SendClickItemPacket rusza bufor pakietow). Radar prosi komenda potoku "!pick".
+    if (InterlockedExchange(&g_want_pick, 0)) {
+        void *self = *(void **)(g_base + VCORE_PLAYER_SINGLETON_RVA);
+        if (self)
+            ((PFN_PICK)(g_base + VCORE_PICK_RVA))(self);
     }
 }
 
@@ -267,6 +279,9 @@ static DWORD WINAPI server_thread(LPVOID)
                                 g_slot = atoi(cmd + 6);
                                 InterlockedExchange(&g_want_drink, 1);
                                 dbg("native drink: slot=%d (flaga dla hooka)", g_slot);
+                            } else if (strncmp(cmd, "!pick", 5) == 0) {
+                                InterlockedExchange(&g_want_pick, 1);
+                                dbg("native pick (flaga dla hooka)");
                             }
                         } else {
                             queue_script(cmd);          // Python (dziala tam, gdzie petla opruznia kolejke)

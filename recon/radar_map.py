@@ -21,7 +21,8 @@ Tryby i klawisze:
     K  - ponowna kalibracja offsetow pol (robiona automatycznie przy starcie)
     H  - auto-mikstura wl/wyl
     [ / ]  - prog "Pij <" -/+ 5% (histereza: pij ponizej "Pij<", lej az do "Lecz do")
-    Suwaki na gorze: Pij <% (start), Lecz do % (cel), Odstep s (min. czas miedzy miksturami)
+    Panel POD radarem: Pij <% (start), Lecz do % (cel), Odstep s (min. czas), Auto-loot + Loot co s.
+    Okno zapamietuje pozycje i rozmiar (data/ui_state.json) - otwiera sie tam, gdzie zostalo zamkniete.
     J  - (po)wstrzyknij autopot.dll = picie BEZ fokusu (wymaga build.bat: dll + inject.exe).
          Bez DLL dziala stara sciezka SendInput - tylko gdy gra jest aktywnym oknem.
     data/potion_vnums.txt - wpisz vnum mikstury -> picie WPROST z ekwipunku (skan, ignoruje pasek,
@@ -39,6 +40,7 @@ Uruchom (terminal JAKO ADMIN, gra wlaczona):
 """
 import argparse
 import ctypes
+import json
 import math
 import os
 import sys
@@ -93,10 +95,42 @@ MOBLIST_CATS = {"boss", "special", "normal"}
 CLICK_RADIUS = 12   # px na radarze: klik dalej od znacznika nic nie robi
 COL_MOB, COL_NPC, COL_SPECIAL = "#ff3b3b", "#4da6ff", "#00e5b0"
 COL_BOSS, COL_KING = "#d94dff", "#ff9f1a"
+COL_PLAYER = "#ffffff"      # inni gracze
+# WYKRYWANIE GRACZA: po SCIEZCE MODELU, nie po m_eActorType. W tym kliencie "vnum" (-0x70) lezy
+# w obiekcie ZAWIERAJACYM, a nie w CActorInstance, wiec m_eActorType != vnum-4 (sonda na zywo:
+# NPC/gracz/moby czytaja 0 w calym oknie -> pole niewiarygodne tu). Pewny sygnal: gracz ma model
+# "d:/ymir work/pc/<klasa>/..." (moby: /monster/, NPC: /npc/). Model czytamy z CRaceData (race ->
+# race_model), tak samo jak kalibracja vnum/nazwy. Patrz recon/probe_actortype.py.
+PC_MODEL_MARKS = ("/pc/", "/pc2/")
 MAPOUT_NAME = 0x8
 WORLD_MIN, WORLD_MAX = 1.0, 10_000_000.0
 
 CANVAS = 720
+# Zapamietywanie pozycji+rozmiaru okna miedzy sesjami (data/ui_state.json) + domyslny "wysoki prostokat".
+UI_STATE_PATH = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                              "..", "data", "ui_state.json"))
+DEFAULT_GEOMETRY = "470x900"   # szerokosc x wysokosc, gdy brak zapisanej geometrii
+
+
+def load_ui_geometry():
+    """Zapisana geometria okna w formacie 'WxH+X+Y' albo None."""
+    try:
+        with open(UI_STATE_PATH, encoding="utf-8") as f:
+            g = json.load(f).get("geometry")
+        return g if isinstance(g, str) and g else None
+    except Exception:
+        return None
+
+
+def save_ui_geometry(geo):
+    """Zapisz geometrie okna do pliku stanu UI (ciche niepowodzenie)."""
+    try:
+        with open(UI_STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump({"geometry": geo}, f)
+    except Exception:
+        pass
+
+
 RESCAN_SEC = 1.5    # okres skanu pamieci w tle (nowe moby/metiny); sam skan ~0.2 s
 # Auto-mikstura (recon/autopot.py): HP z CPythonPlayer, "nacisniecie" slotu w oknie gry.
 PLAYER_CLASS = "CPythonPlayer"
@@ -106,11 +140,17 @@ POTION_LOW = 50           # % HP - zacznij pic ponizej (suwak "Pij <", klawisze 
 POTION_HIGH = 75          # % HP - lej az do tego poziomu (suwak "Lecz do")
 POTION_COOLDOWN = 0.3     # s - min. odstep miedzy miksturami (suwak "Odstep")
 POTION_POLL = 0.07        # s - jak czesto dedykowana petla sprawdza HP (szybka reakcja, nie co klatke)
+# Auto-loot (MVP): co LOOT_INTERVAL s wolamy player.PickCloseItem() przez potok DLL - klient
+# podnosi najblizszy drop w zasiegu (<=300). Dziala tam, gdzie pending-calls sa opruzniane
+# (GameCoreTop). Bez detekcji w pamieci i bez filtra vnum - to prosta wersja na start.
+LOOT_INTERVAL = 0.5       # s - odstep miedzy probami podniesienia (suwak "Loot co s")
 # Stabilny odczyt HP przez wskaznik singletona CPythonPlayer - dla buildow bez RTTI, gdzie skan
 # pamieci zawodzi (np. vCore: tablica 8-bajtowa, dolny dword XOR). RVA/offsety sa SPECYFICZNE DLA
 # DANEGO BUILDU exe (znalezione analiza binarki). value(i)=*(base+singleton_rva)+array_off+i*stride ^key.
 POINT_PTR_CLIENTS = {
-    "vcore.exe": dict(singleton_rva=0x1B8C664, array_off=0x1A668, stride=8, key=0xE73AC1DA),
+    # UWAGA: vCore przekompilowany (2026-10-27) -> singleton CPythonPlayer przesunięty 0x1B8C664 ->
+    # 0x1B8D674 (zweryfikowane na żywo: HP/maxHP/level sensowne). array_off 0x1A668 bez zmian.
+    "vcore.exe": dict(singleton_rva=0x1B8D674, array_off=0x1A668, stride=8, key=0xE73AC1DA),
 }
 # Picie wprost z ekwipunku: vnum mikstur w data/potion_vnums.txt (edytowalny w locie).
 # Pusty plik -> picie slotem paska (POTION_KEY). Lista vnum -> skan EQ (net.SendItemUsePacket):
@@ -136,15 +176,16 @@ k32.VirtualQueryEx.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.POINTER(
 
 
 def load_mob_proto():
-    """{vnum: (type, rank)} z mob_proto.txt; pusty slownik gdy brak pliku (wszystko = mob)."""
+    """{vnum: (type, rank, level)} z mob_proto.txt; pusty gdy brak pliku (wszystko = mob).
+    Kolumny: VNUM=0, RANK=2, TYPE=3, LEVEL=5 (naglowek mob_proto)."""
     proto = {}
     try:
         with open(os.path.join(PROTO_DIR, "mob_proto.txt"), encoding="latin-1") as f:
             next(f)
             for line in f:
                 c = line.split("\t")
-                if len(c) > 3 and c[0].isdigit():
-                    proto[int(c[0])] = (int(c[3] or 0), int(c[2] or 0))
+                if len(c) > 5 and c[0].isdigit():
+                    proto[int(c[0])] = (int(c[3] or 0), int(c[2] or 0), int(c[5] or 0))
     except OSError:
         print("[proto] brak mob_proto.txt - bez klasyfikacji bossow/NPC")
     return proto
@@ -239,6 +280,8 @@ class RadarMap:
         self.mapout_obj = None    # CMapOutdoor
         self.fixed_map = bool(map_name)   # mapa podana recznie -> bez auto-przelaczania
         self.mobs = []            # [obj]
+        self.pc_objs = set()      # aktorzy z modelem gracza (/pc/) - inni gracze; liczone w rescan
+        self.metin_actors = []    # [(vnum, nazwa, x, y)] aktorzy metinow (vnum 8xxx) - do etykiet metinow
         self.effs = []            # [obj] wszystkie CEffectInstance (do kalibracji)
         self.metins = []          # [(wx, wy, name)]
         self.off = dict(DEFAULT_OFFSETS)
@@ -284,34 +327,64 @@ class RadarMap:
         self.pot_vnums = []
         self._pot_vnums_mtime = None
         self._reload_pot_vnums()
+        # auto-loot (MVP): podnoszenie najblizszego dropu co loot_interval (tylko gdy DLL wykonuje
+        # Python = GameCoreTop). Bez detekcji/filtra - prosta wersja na start.
+        self.autoloot_on = False
+        self.loot_interval = LOOT_INTERVAL
+        self._last_loot = 0.0
+        self.loot_count = 0
 
         self.root = root
-        # pasek sterowania auto-miksturą: checkbox + 3 suwaki (pij ponizej / lecz do / odstep).
-        # Klawisze [H] [ / ] dzialaja dalej i sa zsynchronizowane; zmienne tk to "lustro" -
-        # zrodlem prawdy zostaja self.autopot_on / self.pot_low / self.pot_high / self.pot_cd.
+        # Przywroc pozycje i rozmiar okna z poprzedniej sesji (albo domyslny wysoki prostokat).
+        geo = load_ui_geometry()
+        try:
+            root.geometry(geo if geo else DEFAULT_GEOMETRY)
+        except Exception:
+            root.geometry(DEFAULT_GEOMETRY)
+        root.protocol("WM_DELETE_WINDOW", self._on_close)   # zapisz geometrie przy zamknieciu
+
+        # UKLAD: RADAR na gorze (wypelnia), PANEL sterowania POD radarem (wysoki prostokat).
+        # Panel: Auto-mikstura (+3 suwaki) i Auto-loot (+suwak) jeden pod drugim (grid, 2 kolumny).
+        # Klawisze [H] [ / ] [L] dzialaja dalej i sa zsynchronizowane; zmienne tk to "lustro" -
+        # zrodlem prawdy zostaja self.autopot_on / pot_low / pot_high / pot_cd / autoloot_on / loot_interval.
         self.autopot_var = tk.BooleanVar(value=self.autopot_on)
         self.low_var = tk.IntVar(value=self.pot_low)
         self.high_var = tk.IntVar(value=self.pot_high)
         self.cd_var = tk.DoubleVar(value=self.pot_cd)
-        bar = tk.Frame(root, bg="#0b0f0b")
-        bar.pack(side="top", fill="x")
-        tk.Checkbutton(bar, text="Auto-mikstura", variable=self.autopot_var,
-                       command=self._on_autopot_check, bg="#0b0f0b", fg="#9fe7a6",
-                       selectcolor="#1b2a1b", activebackground="#0b0f0b", activeforeground="#cdebcf",
-                       font=("Consolas", 9)).pack(side="left", padx=6, pady=2)
-
-        def _mkscale(lbl, var, lo, hi, res, cmd, fg, length=140):
-            tk.Label(bar, text=lbl, bg="#0b0f0b", fg="#9fe7a6", font=("Consolas", 9)).pack(side="left")
-            tk.Scale(bar, from_=lo, to=hi, resolution=res, orient="horizontal", length=length,
-                     variable=var, command=cmd, bg="#0b0f0b", fg=fg, troughcolor="#222",
-                     highlightthickness=0, font=("Consolas", 8)).pack(side="left", padx=2)
-
-        _mkscale("Pij <%", self.low_var, 5, 95, 1, self._on_low, "#ffe14d")
-        _mkscale("Lecz do %", self.high_var, 5, 99, 1, self._on_high, "#4da6ff")
-        _mkscale("Odstep s", self.cd_var, 0.1, 1.0, 0.05, self._on_cd, "#cdebcf", 110)
+        self.autoloot_var = tk.BooleanVar(value=self.autoloot_on)
+        self.loot_var = tk.DoubleVar(value=self.loot_interval)
 
         self.canvas = tk.Canvas(root, width=CANVAS, height=CANVAS, bg="#0b0f0b", highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True)
+        panel = tk.Frame(root, bg="#0b0f0b")
+        panel.columnconfigure(1, weight=1)                  # suwaki rozciagaja sie na szerokosc okna
+        self._panel_row = 0
+
+        def _chk(text, var, cmd, fg, afg):
+            tk.Checkbutton(panel, text=text, variable=var, command=cmd, bg="#0b0f0b", fg=fg,
+                           selectcolor="#1b2a1b", activebackground="#0b0f0b", activeforeground=afg,
+                           font=("Consolas", 9)).grid(row=self._panel_row, column=0, columnspan=2,
+                                                       sticky="w", padx=6, pady=(4, 0))
+            self._panel_row += 1
+
+        def _mkscale(lbl, var, lo, hi, res, cmd, fg):
+            tk.Label(panel, text=lbl, bg="#0b0f0b", fg="#9fe7a6", font=("Consolas", 9)).grid(
+                row=self._panel_row, column=0, sticky="w", padx=6)
+            tk.Scale(panel, from_=lo, to=hi, resolution=res, orient="horizontal",
+                     variable=var, command=cmd, bg="#0b0f0b", fg=fg, troughcolor="#222",
+                     highlightthickness=0, font=("Consolas", 8)).grid(
+                row=self._panel_row, column=1, sticky="ew", padx=(2, 6))
+            self._panel_row += 1
+
+        _chk("Auto-mikstura", self.autopot_var, self._on_autopot_check, "#9fe7a6", "#cdebcf")
+        _mkscale("Pij <%", self.low_var, 5, 95, 1, self._on_low, "#ffe14d")
+        _mkscale("Lecz do %", self.high_var, 5, 99, 1, self._on_high, "#4da6ff")
+        _mkscale("Odstep s", self.cd_var, 0.1, 1.0, 0.05, self._on_cd, "#cdebcf")
+        _chk("Auto-loot", self.autoloot_var, self._on_autoloot_check, "#e9d5a0", "#f5e6bf")
+        _mkscale("Loot co s", self.loot_var, 0.2, 2.0, 0.1, self._on_loot_cd, "#e9d5a0")
+
+        # Kolejnosc pakowania wazna: PANEL na dole, canvas wypelnia reszte NAD nim.
+        panel.pack(side="bottom", fill="x")
+        self.canvas.pack(side="top", fill="both", expand=True)
         self.cw = self.ch = CANVAS            # biezacy rozmiar canvasa (zmienia sie z oknem)
         self.full_zoom = 1.0                  # zoom trybu FULL wzgledem dopasowania do okna
         self.canvas.bind("<Configure>", self._on_resize)
@@ -395,6 +468,20 @@ class RadarMap:
     def _on_cd(self, val):
         self.pot_cd = float(val)
 
+    def _on_autoloot_check(self):
+        self.autoloot_on = bool(self.autoloot_var.get())
+
+    def _on_loot_cd(self, val):
+        self.loot_interval = float(val)
+
+    def _on_close(self):
+        """Zapisz pozycje i rozmiar okna (by otworzyc sie tam samo), potem zamknij."""
+        try:
+            save_ui_geometry(self.root.geometry())
+        except Exception:
+            pass
+        self.root.destroy()
+
     def _inject_dll(self):
         """Wstrzykuje autopot.dll (picie bez fokusu) i sprawdza, czy FAKTYCZNIE wykonuje komendy.
         Niektore klienty (vCore) nie opruzniaja kolejki pending-calls - wtedy picie przez DLL nie
@@ -457,9 +544,12 @@ class RadarMap:
         self._moblist_mtime = None        # wymus przeladowanie nawet przy tym samym mtime
         self._reload_moblist()
 
-    def _classify(self, vnum):
-        """'boss' | 'king' | 'special' | 'npc' | 'mob' - lista ma pierwszenstwo nad mob_proto."""
-        mtype, rank = self.proto.get(vnum, (0, 0))
+    def _classify(self, vnum, is_pc=False):
+        """'player' | 'boss' | 'king' | 'special' | 'npc' | 'mob'.
+        Inny gracz (model /pc/) ma pierwszenstwo; dalej lista nad mob_proto."""
+        if is_pc:
+            return "player"
+        mtype, rank = self.proto.get(vnum, (0, 0, 0))[:2]
         cat = self.moblist.get(vnum)
         if cat == "boss":
             return "boss"
@@ -512,6 +602,50 @@ class RadarMap:
         except Exception:
             return ""
         return self._std_string(p + self.off["eff_fname"])
+
+    def _fmt_metin(self, name, vnum):
+        """Etykieta metina: nazwa BEZ slowa 'Metin' + poziom z proto. 'Metin Walki' -> 'Walki 10'."""
+        nm = (name or "").strip()
+        if nm.lower().startswith("metin"):
+            nm = nm[5:].lstrip(" -–—")      # usun 'Metin' i separator
+        lvl = self.proto.get(vnum, (0, 0, 0))[2]
+        if not nm:
+            nm = str(vnum) if vnum else "metin"
+        return "%s %d" % (nm, lvl) if lvl else nm
+
+    def _metin_label(self, mx, my):
+        """Nazwa+poziom dla metina w (mx,my). Gdy na mapie 1 typ metina - ten dla wszystkich;
+        gdy wiele - najblizszy aktor metina po pozycji. Brak aktorow -> 'metin'."""
+        acts = self.metin_actors
+        if not acts:
+            return "metin"
+        if len(set(a[0] for a in acts)) == 1:
+            return self._fmt_metin(acts[0][1], acts[0][0])
+        best = None
+        for vnum, name, x, y in acts:
+            if x is None:
+                continue
+            d = math.hypot(x - mx, y - my)
+            if best is None or d < best[0]:
+                best = (d, name, vnum)
+        if best is None:
+            return self._fmt_metin(acts[0][1], acts[0][0])
+        return self._fmt_metin(best[1], best[2])
+
+    def _actor_model(self, o):
+        """Sciezka modelu aktora (".../pc|monster|npc/<folder>/x.gr2") z CRaceData; '' gdy brak."""
+        try:
+            rp = self.pm.read_uint(o + self.off["race"])
+        except Exception:
+            return ""
+        if not (0x10000 < rp < 0x7FFF0000):
+            return ""
+        return self._std_string(rp + self.off["race_model"]).lower().replace("\\", "/")
+
+    def _actor_is_pc(self, o):
+        """True gdy aktor to inny GRACZ (model w /pc/). Pewniejsze niz m_eActorType w tym kliencie."""
+        m = self._actor_model(o)
+        return bool(m) and any(mark in m for mark in PC_MODEL_MARKS)
 
     def _mob_name(self, o):
         a = o + self.off["name"]
@@ -598,11 +732,32 @@ class RadarMap:
                   "Diagnoza z gry: python recon/find_hp.py -e %s --hp <HP> --maxhp <maxHP>"
                   % self.proc_name.replace(".exe", ""))
         self.mobs = mobs
+        # inni gracze: aktorzy z modelem /pc/ (liczone tu, raz na skan - nie co klatke)
+        self.pc_objs = set(o for o in mobs if self._actor_is_pc(o))
+        # aktorzy metinow (vnum 8xxx): zrodlo NAZWY/POZIOMU dla metinow rysowanych z efektow.
+        # (ich pozycja bywa niestabilna - sluzy tylko do dopasowania, gdy typow jest kilka)
+        metin_actors = []
+        for o in mobs:
+            try:
+                vnum = self.pm.read_uint(o + self.off["vnum"])
+            except Exception:
+                continue
+            if 8000 <= vnum < 9000:
+                try:
+                    ax = self.pm.read_float(o + self.off["mob_x"])
+                    ay = self.pm.read_float(o + self.off["mob_x"] + 4)
+                    if not (math.isfinite(ax) and math.isfinite(ay)):
+                        ax = ay = None
+                except Exception:
+                    ax = ay = None
+                metin_actors.append((vnum, self._mob_name(o), ax, ay))
+        self.metin_actors = metin_actors
         self.effs = effs
         self.metins = metins
 
     def _iter_mobs(self, hx, hy):
-        """Yield (wx, wy, vnum, obj) dla aktorow z sensowna pozycja (bez samego gracza).
+        """Yield (wx, wy, vnum, is_pc, obj) dla aktorow z sensowna pozycja (bez samego gracza).
+        is_pc = aktor to inny gracz (model /pc/, z self.pc_objs liczonego w rescan).
         Pomija niewidzialne typy z mob_proto i kamienie (metiny rysujemy z efektow)."""
         mob_x, vnum_off = self.off["mob_x"], self.off["vnum"]
         for o in self.mobs:
@@ -616,9 +771,11 @@ class RadarMap:
                 continue
             if 8000 <= vnum < 9000 or math.hypot(x - hx, y - hy) < 50:
                 continue
-            if self.proto.get(vnum, (0, 0))[0] in HIDDEN_TYPES:
+            is_pc = o in self.pc_objs
+            # Gracz NIE podlega filtrowi HIDDEN_TYPES (jego vnum = rasa, bywa w proto).
+            if not is_pc and self.proto.get(vnum, (0, 0, 0))[0] in HIDDEN_TYPES:
                 continue
-            yield x, y, vnum, o
+            yield x, y, vnum, is_pc, o
 
     # ---------- mapa ----------
     def _current_map_name(self):
@@ -710,6 +867,9 @@ class RadarMap:
         elif k == "h":
             self.autopot_on = not self.autopot_on
             self.autopot_var.set(self.autopot_on)       # odbij w checkboxie
+        elif k == "l":
+            self.autoloot_on = not self.autoloot_on
+            self.autoloot_var.set(self.autoloot_on)     # odbij w checkboxie
         elif k == "j":
             self.dll_status = self._inject_dll()
         elif k == "bracketleft":
@@ -731,7 +891,7 @@ class RadarMap:
         elif k == "down":
             self.pan_y -= 60
         elif k == "escape":
-            self.root.destroy()
+            self._on_close()
 
     # ---------- rysowanie ----------
     def tick(self):
@@ -752,19 +912,24 @@ class RadarMap:
             sx, sy = self.world_to_canvas(mx, my, hx, hy)
             if self._in_view(sx, sy):
                 c.create_rectangle(sx - 5, sy - 5, sx + 5, sy + 5, fill="#ffe14d", outline="#000")
-                if self.show_names:
-                    c.create_text(sx, sy - 10, fill="#ffe14d", text="metin", font=("Consolas", 8))
+                c.create_text(sx, sy - 10, fill="#ffe14d", text=self._metin_label(mx, my),
+                              font=("Consolas", 8))
 
         # aktorzy: moby (czerwone), NPC (niebieskie), specjalne z listy (wieksze, mietowe),
         # bossy z listy / ranga 4+ (najwieksze, zawsze z nazwa)
-        nmob = nnpc = nspec = nboss = 0
+        nmob = nnpc = nspec = nboss = nplayer = 0
         bosses = []
         specials = []
+        players = []
         hits = []                                        # (sx, sy, vnum, obj) do klikania
-        for mx, my, vnum, o in self._iter_mobs(hx, hy):
+        for mx, my, vnum, is_pc, o in self._iter_mobs(hx, hy):
             sx, sy = self.world_to_canvas(mx, my, hx, hy)
             hits.append((sx, sy, vnum, o))
-            cls = self._classify(vnum)
+            cls = self._classify(vnum, is_pc)
+            if cls == "player":
+                nplayer += 1
+                players.append((sx, sy, vnum, o))        # rysowani nad mobami, pod bossami
+                continue
             if cls in ("boss", "king"):
                 nboss += 1
                 bosses.append((sx, sy, cls, vnum, o))    # rysowane na koncu, na wierzchu
@@ -784,6 +949,12 @@ class RadarMap:
                 if self.show_names:
                     nm = self._label(o, vnum)
                     c.create_text(sx, sy - 9, fill=col, text=nm, font=("Consolas", 8))
+        for sx, sy, vnum, o in players:
+            if self._in_view(sx, sy):
+                c.create_oval(sx - 6, sy - 6, sx + 6, sy + 6, fill=COL_PLAYER, outline="#000", width=2)
+                nm = self._label(o, vnum)
+                c.create_text(sx + 1, sy - 10, fill="#000", text=nm, font=("Consolas", 8, "bold"))
+                c.create_text(sx, sy - 11, fill=COL_PLAYER, text=nm, font=("Consolas", 8, "bold"))
         for sx, sy, vnum, o in specials:
             if self._in_view(sx, sy):
                 c.create_oval(sx - 6, sy - 6, sx + 6, sy + 6, fill=COL_SPECIAL, outline="#000", width=2)
@@ -807,9 +978,9 @@ class RadarMap:
 
         lx = (hx - self.map.bx) / map_assets.WORLD_PER_PX
         ly = (hy - self.map.by) / map_assets.WORLD_PER_PX
-        info = ("%s  tryb:%s  gracz lok:(%.0f,%.0f) swiat:(%.0f,%.0f)  moby:%d spec:%d npc:%d "
+        info = ("%s  tryb:%s  gracz lok:(%.0f,%.0f) swiat:(%.0f,%.0f)  gracze:%d moby:%d spec:%d npc:%d "
                 "bossy:%d metiny:%d  flipY:%s flipX:%s   [F]tryb [+/-]zoom [Y][X]odbij [N]nazwy [R]skan"
-                % (self.map.name, self.mode, lx, ly, hx, hy, nmob, nspec, nnpc, nboss,
+                % (self.map.name, self.mode, lx, ly, hx, hy, nplayer, nmob, nspec, nnpc, nboss,
                    len(self.metins), self.map.flip_y, self.map.flip_x))
         c.create_rectangle(0, self.ch - 20, self.cw, self.ch, fill="#0b0f0b", outline="")
         c.create_text(8, self.ch - 10, anchor="w", fill="#9fe7a6", text=info, font=("Consolas", 8))
@@ -827,6 +998,28 @@ class RadarMap:
                 self._autopot_step()
             except Exception as e:
                 print("[mikstura] blad petli:", e)
+            try:
+                self._autoloot_step()
+            except Exception as e:
+                print("[loot] blad petli:", e)
+
+    def _autoloot_step(self):
+        """Co loot_interval podnosi najblizszy drop w zasiegu (PickCloseItem).
+        GameCoreTop: przez Python (pending-call). vCore: natywnie z hooka per-klatka (!pick, bez fokusu)."""
+        if not self.autoloot_on:
+            return
+        now = time.time()
+        if now - self._last_loot < self.loot_interval:
+            return
+        if self.dll_exec:                                   # GameCoreTop: Python przez pending-call
+            ok = autopot.pick_close_item(self.pm.process_id)
+        elif self.native_drink:                             # vCore: hook per-klatka, natywne
+            ok = autopot.pick_close_item_native(self.pm.process_id)
+        else:
+            return
+        if ok:
+            self._last_loot = now
+            self.loot_count += 1
 
     def _autopot_step(self):
         """Jeden krok: odczyt HP, histereza (pij<low, lej do high), ewentualne picie. Zapisuje
@@ -892,7 +1085,7 @@ class RadarMap:
             return
         hp, mhp, pct = self._hp, self._mhp, self._pct
         w = 180
-        c.create_rectangle(2, 2, 560, 41, fill="#0b0f0b", outline="")     # tlo dla czytelnosci
+        c.create_rectangle(2, 2, 560, 54, fill="#0b0f0b", outline="")     # tlo dla czytelnosci
         c.create_rectangle(8, 8, 8 + w, 22, fill="#300", outline="#000")
         c.create_rectangle(8, 8, 8 + w * max(0.0, min(1.0, hp / mhp)), 22, fill="#d22", outline="")
         c.create_line(8 + w * self.pot_low / 100.0, 6, 8 + w * self.pot_low / 100.0, 24,
@@ -911,6 +1104,19 @@ class RadarMap:
                       text="mikstura %s  pij<%d%% lecz>%d%% co%.2fs  %s  %s  [J]DLL:%s"
                            % (method, self.pot_low, self.pot_high, self.pot_cd, mode, state,
                               self.dll_status),
+                      font=("Consolas", 8))
+        # auto-loot: GameCoreTop przez Python (dll_exec), vCore natywnie z hooka (native_drink)
+        if self.dll_exec or self.native_drink:
+            loot_state = ("WL  podniesiono:%d" % self.loot_count) if self.autoloot_on else "WYL"
+            loot_col = "#e9d5a0" if self.autoloot_on else "#999"
+            loot_via = "hook" if self.native_drink and not self.dll_exec else "python"
+        else:
+            loot_state = "niedostepny (brak exec/hook)"
+            loot_col = "#999"
+            loot_via = "-"
+        c.create_text(8, 47, anchor="w", fill=loot_col,
+                      text="[L]auto-loot %s  co%.1fs (najblizszy <=300, %s)"
+                           % (loot_state, self.loot_interval, loot_via),
                       font=("Consolas", 8))
 
 
