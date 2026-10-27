@@ -21,3 +21,24 @@ logs/hp_track.txt
 logs/player_probe.txt
 logs/dll_debug.txt
 logs/hook_*.ok
+
+# Debug pętli bota (rośnie w trakcie działania)
+data/*.log
+
+# Środowiska / IDE / system
+.venv/
+venv/
+.vscode/
+.idea/
+.claude/
+Thumbs.db
+desktop.ini
+
+# Pliki gry/klienta NIE trafiają do repo (leżą poza projektem, w C:\Metin)
+*.rar
+*.epk
+*.eix
+*.dds
+
+# Cache minimap budowany z paczek klienta (recon/map_assets.py) - zasoby gry, odtwarzalne
+data/maps/
