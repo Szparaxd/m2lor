@@ -9,6 +9,8 @@ Radar (radar_map.py) przy starcie robi rescan()+calibrate(), a kalibracja WYMAGA
 
 Uzycie:  py -3 recon/launch.py            (domyslnie GameCoreTop)
          py -3 recon/launch.py -e vCore.exe --game "C:\\...\\vCore.exe"
+         py -3 recon/launch.py -e vCore.exe --game ... --new   (KOLEJNY klient obok dzialajacych)
+Radar dostaje PID klienta (-p), wiec przy kilku klientach kazdy radar trzyma sie swojego okna gry.
 Uruchom z terminala JAKO ADMIN (radar potrzebuje OpenProcess / wstrzykniecia DLL).
 """
 import argparse
@@ -23,6 +25,7 @@ import numpy as np
 import pymem
 import pymem.process
 
+import clients
 import rtti
 
 HERO_CLASS = "CGameEventManager"   # pozycja gracza: X@+0x8 ; worldY = -(+0xC) (jak w radar_map)
@@ -63,10 +66,10 @@ def regions(h):
     return out
 
 
-def in_world(proc_name):
-    """True, gdy w procesie gry jest obiekt bohatera z sensowna pozycja swiata (postac w grze)."""
+def in_world(proc_name, pid):
+    """True, gdy w procesie gry (PID) jest obiekt bohatera z sensowna pozycja swiata (postac w grze)."""
     try:
-        pm = pymem.Pymem(proc_name)
+        pm = pymem.Pymem(pid)
     except Exception:
         return False                      # proces jeszcze nie wstal
     try:
@@ -93,27 +96,29 @@ def in_world(proc_name):
     return False
 
 
-def running(proc_name):
-    try:
-        pymem.Pymem(proc_name).close_process()
-        return True
-    except Exception:
-        return False
-
-
 def main():
     ap = argparse.ArgumentParser(description="Uruchom gre + radar (radar startuje po wejsciu w swiat).")
     ap.add_argument("-e", "--exe", default=DEFAULT_EXE, help="nazwa procesu gry")
     ap.add_argument("--game", default=DEFAULT_GAME, help="pelna sciezka do exe gry")
+    ap.add_argument("--new", action="store_true", help="uruchom KOLEJNEGO klienta, nawet gdy jakis dziala")
+    ap.add_argument("-p", "--pid", type=int, default=None, help="podlacz radar do dzialajacego klienta o PID")
     args = ap.parse_args()
     exe = args.exe if args.exe.lower().endswith(".exe") else args.exe + ".exe"
 
     recon_dir = os.path.dirname(os.path.abspath(__file__))
 
-    # 1) uruchom gre (jesli nie dziala). Gra WYMAGA swojego katalogu jako cwd (packi).
-    if running(exe):
-        print("[launch] %s juz dziala - nie uruchamiam drugiej instancji" % exe)
-    else:
+    # 1) wybierz klienta albo uruchom nowego. Gra WYMAGA swojego katalogu jako cwd (packi).
+    #    Nowy klient = PID, ktorego nie bylo przed startem (launcher gry moze podmienic proces).
+    before = {p for p, _ in clients.list_clients((exe,))}
+    pid = args.pid
+    if pid is None and before and not args.new:
+        try:
+            pid, _ = clients.pick(exe)
+        except LookupError as e:
+            print("[launch] %s\n[launch] albo --new, by uruchomic kolejnego klienta" % e)
+            return 1
+        print("[launch] %s juz dziala (PID %d) - nie uruchamiam drugiej instancji" % (exe, pid))
+    elif pid is None:
         if not os.path.isfile(args.game):
             print("[launch] BLAD: nie znalazlem gry: %s" % args.game)
             return 1
@@ -124,7 +129,12 @@ def main():
     print("[launch] czekam, az postac wejdzie w swiat (zaloguj sie i wybierz postac)...")
     t0 = time.time()
     while time.time() - t0 < TIMEOUT_SEC:
-        if in_world(exe):
+        if pid is None:
+            new = sorted({p for p, _ in clients.list_clients((exe,))} - before)
+            pid = new[-1] if new else None
+            if pid:
+                print("[launch] nowy klient: PID %d" % pid)
+        if pid and in_world(exe, pid):
             print("[launch] postac w swiecie - uruchamiam radar")
             break
         time.sleep(POLL_SEC)
@@ -134,8 +144,8 @@ def main():
 
     # 3) odpal radar (sam wstrzyknie DLL i skalibruje offsety)
     radar = os.path.join(recon_dir, "radar_map.py")
-    print("[launch] start: %s -e %s" % (radar, exe))
-    subprocess.Popen([sys.executable, radar, "-e", exe], cwd=recon_dir)
+    print("[launch] start: %s -e %s -p %d" % (radar, exe, pid))
+    subprocess.Popen([sys.executable, radar, "-e", exe, "-p", str(pid)], cwd=recon_dir)
     print("[launch] gotowe - radar wystartowal.")
     return 0
 

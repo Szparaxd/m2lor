@@ -57,7 +57,9 @@ import pymem.process
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import autopot
 import calibrate
+import clients
 import collision as collision_mod
+import identity
 import map_assets
 import rtti
 from PIL import Image, ImageTk
@@ -119,21 +121,33 @@ UI_STATE_PATH = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__
 DEFAULT_GEOMETRY = "470x900"   # szerokosc x wysokosc, gdy brak zapisanej geometrii
 
 
-def load_ui_geometry():
-    """Zapisana geometria okna w formacie 'WxH+X+Y' albo None."""
+def _load_ui_state():
     try:
         with open(UI_STATE_PATH, encoding="utf-8") as f:
-            g = json.load(f).get("geometry")
-        return g if isinstance(g, str) and g else None
+            st = json.load(f)
+        return st if isinstance(st, dict) else {}
     except Exception:
-        return None
+        return {}
 
 
-def save_ui_geometry(geo):
-    """Zapisz geometrie okna do pliku stanu UI (ciche niepowodzenie)."""
+def load_ui_geometry(char=None):
+    """Zapisana geometria okna 'WxH+X+Y' (dla postaci `char`, inaczej ostatnia ogolna) albo None.
+    Per postac: przy kilku radarach kazdy otwiera sie tam, gdzie zostal zamkniety jego klient."""
+    st = _load_ui_state()
+    g = (st.get("chars") or {}).get(char) if char else None
+    g = g or st.get("geometry")
+    return g if isinstance(g, str) and g else None
+
+
+def save_ui_geometry(geo, char=None):
+    """Zapisz geometrie okna (ogolna + per postac) do pliku stanu UI (ciche niepowodzenie)."""
+    st = _load_ui_state()
+    st["geometry"] = geo
+    if char:
+        st.setdefault("chars", {})[char] = geo
     try:
         with open(UI_STATE_PATH, "w", encoding="utf-8") as f:
-            json.dump({"geometry": geo}, f)
+            json.dump(st, f, indent=1)
     except Exception:
         pass
 
@@ -357,8 +371,9 @@ def writable_regions(handle):
 
 
 class RadarMap:
-    def __init__(self, root, map_name=None, process=DEFAULT_PROCESS):
-        self.pm = pymem.Pymem(process)
+    def __init__(self, root, map_name=None, process=DEFAULT_PROCESS, pid=None):
+        # po PID: przy kilku klientach tego samego exe nazwa wskazalaby zawsze pierwszy (recon/clients.py)
+        self.pm = pymem.Pymem(pid) if pid else pymem.Pymem(process)
         self.proc_name = process
         mod = pymem.process.module_from_name(self.pm.process_handle, process)
         self.base = mod.lpBaseOfDll
@@ -390,6 +405,12 @@ class RadarMap:
         except LookupError as e:
             print("[hp] %s - sprobuje znalezc HP skanem bez RTTI" % e)
 
+        # tozsamosc postaci (recon/identity.py): nick/klasa/plec/poziom; odswiezana w _rescan_loop
+        self.ident = {}
+        self._nick_off = None          # offset nicku w CPythonPlayer (sonda raz, potem staly)
+        self._db_cls = {}              # nick -> (klasa, plec) z bazy (zapas, 1 zapytanie na nick)
+        self._ident_shown = None       # co pokazuje naglowek/tytul (zmiana -> odswiez w tick)
+        self._face_img = None
         # auto-mikstura
         self.player_obj = None
         self.points_addr = None           # odszyfrowywana tablica punktow (HP @[5], max @[6])
@@ -542,6 +563,11 @@ class RadarMap:
                 row=self._panel_row, column=1, sticky="ew", padx=(2, 6))
             self._panel_row += 1
 
+        # naglowek: portret klasy + "Nick - Klasa lv N" (_refresh_identity_ui)
+        self._id_label = tk.Label(panel, text="(postac?)", compound="left", padx=6, bg="#0b0f0b",
+                                  fg="#ffffff", font=("Consolas", 11, "bold"), anchor="w")
+        self._id_label.grid(row=self._panel_row, column=0, columnspan=2, sticky="w", padx=4, pady=(4, 2))
+        self._panel_row += 1
         _chk("Auto-mikstura", self.autopot_var, self._on_autopot_check, "#9fe7a6", "#cdebcf")
         _mkscale("Pij <%", self.low_var, 5, 95, 1, self._on_low, "#ffe14d")
         _mkscale("Lecz do %", self.high_var, 5, 99, 1, self._on_high, "#4da6ff")
@@ -573,6 +599,14 @@ class RadarMap:
         # pierwsze czytanie pozycji -> kalibracja offsetow pol -> auto-detekcja mapy
         self.rescan()
         self.calibrate()
+        self._update_identity()
+        geo = load_ui_geometry(self.ident.get("nick"))   # okno tej postaci tam, gdzie je zamknieto
+        if geo:
+            try:
+                root.geometry(geo)
+            except Exception:
+                pass
+        self._refresh_identity_ui()
         hx, hy = self._hero_world()
         self._set_map(self._load_map(map_name, hx, hy))
         self._tkimg = None
@@ -720,6 +754,7 @@ class RadarMap:
                     self._dbg("rescan %.0f ms (aktorow %d)", dt * 1000, len(self.mobs))
                 self._reload_moblist()
                 self._reload_pot_vnums()
+                self._update_identity()
                 # teleport/zmiana mapy -> przeladuj tlo (budowa obrazu tez w tle, potem podmiana)
                 name = self._current_map_name()
                 if name and not self.fixed_map and name != self.map.name:
@@ -819,10 +854,53 @@ class RadarMap:
     def _on_close(self):
         """Zapisz pozycje i rozmiar okna (by otworzyc sie tam samo), potem zamknij."""
         try:
-            save_ui_geometry(self.root.geometry())
+            save_ui_geometry(self.root.geometry(), self.ident.get("nick"))
         except Exception:
             pass
         self.root.destroy()
+
+    def _point(self, i):
+        """Odszyfrowany punkt postaci POINT_i (1=poziom, 5/6=HP, 7/8=PM) albo None."""
+        if self.pt_ptr is not None:
+            return autopot.read_point_ptr(self.pm, self.base, self.pt_ptr, i)
+        if self.points_addr is None:
+            return None
+        try:
+            return autopot.read_points(self.pm, self.points_addr, i + 1)[i]
+        except Exception:
+            return None
+
+    def _update_identity(self):
+        """Nick (CPythonPlayer), klasa+plec (model wlasnego aktora, zapas: baza), poziom. Watek skanu."""
+        nick, off = identity.read_nick(self.pm, self.player_obj, self.proc_name, self._nick_off)
+        if off is not None and off != self._nick_off:
+            print("[id] nick @ CPythonPlayer+0x%X: %s" % (off, nick))
+            self._nick_off = off
+        cls, sex = identity.class_from_model(self._actor_model(self.self_actor)) if self.self_actor \
+            else (None, None)
+        if not cls and nick:
+            if nick not in self._db_cls:
+                self._db_cls[nick] = identity.class_from_db(nick)
+            cls, sex = self._db_cls[nick]
+        lvl = self._point(1)
+        self.ident = dict(pid=self.pm.process_id, exe=self.proc_name, nick=nick, cls=cls, sex=sex,
+                          level=lvl if lvl and 0 < lvl < 1000 else None)
+
+    def _refresh_identity_ui(self):
+        """Naglowek panelu + tytul okna, gdy tozsamosc sie zmienila (tylko watek GUI)."""
+        idn = self.ident
+        key = (idn.get("nick"), idn.get("cls"), idn.get("sex"), idn.get("level"))
+        if key == self._ident_shown:
+            return
+        self._ident_shown = key
+        txt = identity.label(idn) if idn.get("nick") else "(postac nie w swiecie)"
+        fp = identity.face_path(idn.get("cls"), idn.get("sex"))
+        try:
+            self._face_img = ImageTk.PhotoImage(Image.open(fp)) if fp else None
+        except Exception:
+            self._face_img = None
+        self._id_label.configure(text=txt, image=self._face_img or "")
+        self.root.title("%s - Radar (%s, PID %d)" % (txt, self.proc_name, self.pm.process_id))
 
     def _inject_dll(self):
         """Wstrzykuje autopot.dll (picie bez fokusu) i sprawdza, czy FAKTYCZNIE wykonuje komendy.
@@ -1349,6 +1427,7 @@ class RadarMap:
 
     # ---------- rysowanie ----------
     def tick(self):
+        self._refresh_identity_ui()
         c = self.canvas
         c.delete("all")
         hx, hy = self._hero_world()
@@ -2419,10 +2498,12 @@ def parse_args(argv=None):
     p.add_argument("map_name", nargs="?", default=None,
                    help="wymuszona mapa, np. metin2_map_a1 (domyslnie: biezaca mapa gracza)")
     # "-exe" jako alias: bez niego argparse czyta "-exe X" jako "-e xe" + map_name=X
-    p.add_argument("-e", "--exe", "-exe", default=DEFAULT_PROCESS, metavar="EXE",
-                   help="nazwa procesu gry (domyslnie: %(default)s)")
+    p.add_argument("-e", "--exe", "-exe", default=None, metavar="EXE",
+                   help="nazwa procesu gry (domyslnie: jedyny uruchomiony z %s)" % ", ".join(clients.GAME_EXES))
+    p.add_argument("-p", "--pid", type=int, default=None,
+                   help="PID klienta - wymagany, gdy dziala kilka klientow (lista: python recon/clients.py)")
     args = p.parse_args(argv)
-    if not args.exe.lower().endswith(".exe"):   # "-e vCore" == "-e vCore.exe"
+    if args.exe and not args.exe.lower().endswith(".exe"):   # "-e vCore" == "-e vCore.exe"
         args.exe += ".exe"
     return args
 
@@ -2430,15 +2511,20 @@ def parse_args(argv=None):
 def main():
     args = parse_args()
     try:
+        pid, exe = clients.pick(args.exe, args.pid)
+    except LookupError as e:
+        print("[!] %s" % e)
+        return
+    try:
         root = tk.Tk()
     except Exception as e:
         print("Blad tkinter:", e)
         return
-    root.title("Metin2 Radar - MAPA (%s)" % args.exe)
+    root.title("Metin2 Radar - MAPA (%s, PID %d)" % (exe, pid))
     try:
-        RadarMap(root, args.map_name, args.exe)
+        RadarMap(root, args.map_name, exe, pid)
     except pymem.exception.ProcessNotFound:
-        print("[!] Nie znalazlem procesu %s. Gra wlaczona? (inna nazwa -> -e NAZWA.exe)" % args.exe)
+        print("[!] Proces %s (PID %d) zniknal. Gra wlaczona?" % (exe, pid))
         return
     except pymem.exception.CouldNotOpenProcess:
         print("[!] Uruchom terminal JAKO ADMINISTRATOR.")

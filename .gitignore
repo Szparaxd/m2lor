@@ -42,3 +42,5 @@ desktop.ini
 
 # Cache minimap budowany z paczek klienta (recon/map_assets.py) - zasoby gry, odtwarzalne
 data/maps/
+# Portrety klas wyciete z paczki ETC (recon/extract_faces.py) - zasoby gry, odtwarzalne
+data/faces/
