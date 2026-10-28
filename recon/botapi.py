@@ -11,6 +11,7 @@ data/workers/<pid>.json (hub znajduje po nim workery; plik znika przy wyjsciu ra
   GET  /api/snapshot[?entities=1]       stan (+ encje wokol postaci)
   GET  /api/options                     opcje: wartosc + typ + zakres
   POST /api/command {"name","value"}    zmiana opcji (jak w panelu); "buff" -> value {"vnum","on"}
+  POST /api/shutdown                    zamknij radar (jak krzyzyk okna)
 Recznie:  curl -H "X-Bot-Token: <token>" http://127.0.0.1:<port>/api/snapshot
 """
 import atexit
@@ -253,7 +254,13 @@ def _handler_cls(api, token):
         def do_POST(self):
             if not self._authorized():
                 return
-            if urlparse(self.path).path != "/api/command":
+            path = urlparse(self.path).path
+            if path == "/api/shutdown":
+                # czyste zamkniecie jak krzyzyk okna: zapis geometrii, potem atexit usuwa plik workera
+                self._send(200, {"ok": True})
+                api.r.root.after(0, api.r._on_close)
+                return
+            if path != "/api/command":
                 self._send(404, {"error": "nie ma %s" % self.path})
                 return
             try:

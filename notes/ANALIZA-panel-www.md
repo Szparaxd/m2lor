@@ -108,3 +108,16 @@ dwa klienty naraz.
   błędy 400/404, sprzężenie pot_low→pot_high z handlera). **Test z grą OK** (GameCoreTop, Tester3 lv 6):
   snapshot 24 ms z encjami / 1 ms bez, 62 moby; komendy farm_radius/pot_cd/autoloot/pot_low widoczne w panelu tk,
   wartości przywrócone, log radaru bez błędów.
+
+**W3 — hub + lista postaci w przeglądarce (2026-10-28)**, `python recon/hub.py` → http://127.0.0.1:8765:
+- `recon/hub.py` (stdlib, bez instalacji): łączy `clients.list_clients()` z `data/workers/*.json`, pobiera snapshoty
+  równolegle (timeout 1,5 s), usuwa pliki po martwych radarach. Akcje: polecenie do radaru, start radaru (proces
+  odłączony od huba, log `logs/radar_<pid>.txt`), stop przez `POST /api/shutdown` w botapi (czysto: zapis okna),
+  pokaż/ukryj okno gry (`ShowWindow`, także okna już ukryte), nowy klient (`launch.py --new`).
+  Ochrona: tylko 127.0.0.1, sprawdzany `Host` (DNS rebinding) i `Origin` przy POST.
+- `web/` (czysty HTML/CSS/JS, bez budowania): tabliczki postaci jak lewa kolumna m2bob — portret z gry w złotej
+  ramce, nick, klasa z płcią, poziom, mapa, paski HP/PM, przełączniki (Mikstura, Loot, Farma, Chodzenie, Buffy —
+  te, które radar ma), Pokaż/Ukryj okno gry, Uruchom/Zamknij radar. Odświeżanie co 1 s bez przebudowy DOM.
+- Test na żywo OK (Tester3): start radaru z panelu, Loot wł./wył., ukrycie i pokazanie okna gry (radar dalej
+  czyta HP), zamknięcie i ponowne uruchomienie radaru, widok mobilny. NIE testowane: „Uruchom nowego klienta”
+  z panelu (ta sama ścieżka co `launch.py --new`, sprawdzona wcześniej z konsoli).

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Postacie – panel bota</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Marcellus&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="top">
+    <div>
+      <h1>Postacie</h1>
+      <p class="summary" id="summary">Łączę z hubem…</p>
+    </div>
+    <button class="btn btn-gold" id="launch" type="button">Uruchom nowego klienta</button>
+  </header>
+
+  <p class="notice" id="notice" role="status" hidden></p>
+
+  <main id="roster" class="roster" aria-live="polite"></main>
+
+  <template id="tpl-plaque">
+    <article class="plaque">
+      <div class="portrait"><img alt=""></div>
+      <div class="who">
+        <h2 class="nick"></h2>
+        <p class="meta"></p>
+        <div class="bars">
+          <div class="bar bar-hp"><span class="fill"></span><span class="num"></span></div>
+          <div class="bar bar-sp"><span class="fill"></span><span class="num"></span></div>
+        </div>
+      </div>
+      <div class="switches" role="group" aria-label="Funkcje bota"></div>
+      <div class="actions">
+        <button class="btn btn-quiet act-window" type="button"></button>
+        <button class="btn act-radar" type="button"></button>
+      </div>
+      <p class="foot"></p>
+    </article>
+  </template>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
