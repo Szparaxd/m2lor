@@ -132,3 +132,13 @@ dwa klienty naraz.
 - hub: `Cache-Control: no-cache` dla plików strony (inaczej po zmianie app.js przeglądarka trzymała stary).
 - Test na żywo OK (Tester3): mapa i encje zgodne z pozycją, suwak klawiaturą (pot_cd 0.30→0.35→0.30 w radarze),
   zakładki, zoom, powrót do listy. NIE testowane: klikanie po mapie (dodawanie waypointów) — nie ma jeszcze tej funkcji.
+
+**Trasa klikana na mapie w przeglądarce (2026-10-28):**
+- botapi: polecenia `waypoint_add {"x","y"}`, `waypoint_undo`, `waypoint_clear` — jak Ctrl+klik / klawisz C w radarze
+  tkinter (czyszczenie zeruje też `walk_idx`, `_walk_prog`, `_route`); zapis trasy mapy przez `save_route` modułu
+  radaru, jeśli ta wersja go ma (pochodzi z niezacommitowanej pracy drugiej sesji).
+- web: pod radarem „Dodawaj punkty trasy” (tryb: kursor celownik, zielona ramka — zwykły klik nic nie dodaje),
+  „Cofnij punkt”, „Wyczyść trasę” (z potwierdzeniem, liczba punktów w pytaniu).
+- Test na żywo OK (Tester3, trasa 11 pkt): klik 100 px na wschód → punkt (41789, 68300) zgodny z przeliczeniem
+  skali; cofnięcie przywraca plik trasy 1:1; „Anuluj” w potwierdzeniu nic nie usuwa; czyszczenie → 0 pkt i pusty plik,
+  potem odtworzenie 11 pkt z kopii (radar i plik identyczne z oryginałem); złe dane → 400.

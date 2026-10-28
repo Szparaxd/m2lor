@@ -12,6 +12,7 @@ data/workers/<pid>.json (hub znajduje po nim workery; plik znika przy wyjsciu ra
   GET  /api/options                     opcje: wartosc + typ + zakres
   POST /api/command {"name","value"}    zmiana opcji (jak w panelu); "buff" -> value {"vnum","on"}
   POST /api/shutdown                    zamknij radar (jak krzyzyk okna)
+  trasa: name = waypoint_add {"x","y"} / waypoint_undo / waypoint_clear  (jak Ctrl+klik / klawisz C)
 Recznie:  curl -H "X-Bot-Token: <token>" http://127.0.0.1:<port>/api/snapshot
 """
 import atexit
@@ -19,6 +20,7 @@ import json
 import math
 import os
 import secrets
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -159,6 +161,8 @@ class BotApi:
             fn = self._buff_fn(value)
         elif name == "pot_sizes":
             fn = self._pot_sizes_fn(value)
+        elif name in ("waypoint_add", "waypoint_undo", "waypoint_clear"):
+            fn = self._waypoint_fn(name, value)
         elif name in OPTIONS:
             fn = self._option_fn(name, value)
         else:
@@ -219,6 +223,37 @@ class BotApi:
                 self.r.autobuff.enabled.add(vnum)
             else:
                 self.r.autobuff.enabled.discard(vnum)
+        return fn
+
+    def _waypoint_fn(self, name, value):
+        """Trasa auto-chodzenia jak w radarze: add = Ctrl+klik, clear = klawisz C; undo = usun ostatni punkt.
+        Trase zapisujemy per mapa (save_route), jesli ta wersja radaru to umie."""
+        r = self.r
+        if not hasattr(r, "path"):
+            raise ValueError("trasa niedostepna w tej wersji radaru")
+        if name == "waypoint_add":
+            try:
+                x, y = float(value["x"]), float(value["y"])
+            except (TypeError, KeyError, ValueError):
+                raise ValueError('waypoint_add: oczekuje {"x": N, "y": N} (wsp. swiata)')
+            if not (math.isfinite(x) and math.isfinite(y) and 0 <= x < 10_000_000 and 0 <= y < 10_000_000):
+                raise ValueError("waypoint_add: punkt poza mapa")
+        save = getattr(sys.modules.get(type(r).__module__), "save_route", None)
+
+        def fn():
+            if name == "waypoint_add":
+                r.path = r.path + [(x, y)]          # nowa lista (petla czyta snapshot, nie mutujemy)
+            elif name == "waypoint_undo":
+                r.path = r.path[:-1]
+                r.walk_idx = min(getattr(r, "walk_idx", 0), max(len(r.path) - 1, 0))
+            else:
+                r.path = []
+                r.walk_idx = 0
+                for attr, empty in (("_walk_prog", None), ("_route", [])):
+                    if hasattr(r, attr):
+                        setattr(r, attr, empty)
+            if save and getattr(r, "map", None) is not None:
+                save(r.map.name, r.path)
         return fn
 
     def _pot_sizes_fn(self, value):

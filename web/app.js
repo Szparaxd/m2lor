@@ -616,6 +616,38 @@ const detailView = {
   },
 };
 
+/* ---------- trasa: punkty klikane na mapie (jak Ctrl+klik w radarze tkinter) ---------- */
+const routeEdit = $("#route-edit");
+
+async function routeCommand(name, value) {
+  try {
+    await sendOption(detailView.pid, name, value);
+    await detailView.refreshSnap();
+  } catch (e) { showNotice(`Trasa: ${e.message}`); }
+}
+
+routeEdit.addEventListener("click", () => {
+  const on = routeEdit.getAttribute("aria-pressed") !== "true";
+  routeEdit.setAttribute("aria-pressed", String(on));
+  routeEdit.textContent = on ? "Kończę dodawanie punktów" : "Dodawaj punkty trasy";
+  detailView.canvas.classList.toggle("is-editing", on);
+});
+$("#route-undo").addEventListener("click", () => routeCommand("waypoint_undo"));
+$("#route-clear").addEventListener("click", () => {
+  const n = ((detailView.snap && detailView.snap.overlay && detailView.snap.overlay.path) || []).length;
+  if (n && confirm(`Usunąć całą trasę (${plural(n, "punkt", "punkty", "punktów")}) z tej mapy?`)) routeCommand("waypoint_clear");
+});
+detailView.canvas.addEventListener("click", (ev) => {
+  const s = detailView.snap;
+  if (routeEdit.getAttribute("aria-pressed") !== "true" || !s || !s.pos) return;
+  const rect = detailView.canvas.getBoundingClientRect();
+  const k = rect.width / detailView.viewWorld;          // px CSS na jednostkę świata (jak w draw)
+  routeCommand("waypoint_add", {
+    x: Math.round(s.pos.x + (ev.clientX - rect.left - rect.width / 2) / k),
+    y: Math.round(s.pos.y + (ev.clientY - rect.top - rect.height / 2) / k),
+  });
+});
+
 wireActions($(".detail-head", detailView.root), () => detailView.pid, async () => { await detailView.refresh(); detailView.render(); });
 $("#zoom-in").addEventListener("click", () => detailView.zoom(1 / 1.4));
 $("#zoom-out").addEventListener("click", () => detailView.zoom(1.4));

@@ -340,3 +340,8 @@ input[type="range"] { width: 100%; accent-color: var(--gold); }
 @media (prefers-reduced-motion: reduce) {
   .toggle .knob, .toggle .knob::after { transition: none; }
 }
+
+/* --- trasa klikana na mapie --- */
+.route-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+#route-edit[aria-pressed="true"] { border-color: var(--jade); color: var(--ink); background: rgba(95, 163, 138, 0.15); }
+#radar-canvas.is-editing { cursor: crosshair; border-color: var(--jade); }
