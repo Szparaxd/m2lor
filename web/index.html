@@ -22,6 +22,10 @@
       <button class="btn btn-gold" id="launch" type="button">Uruchom nowego klienta</button>
     </header>
     <main id="roster" class="roster" aria-live="polite"></main>
+    <section id="accounts" class="accounts" hidden>
+      <h2>Konta bez klienta</h2>
+      <ul class="account-list"></ul>
+    </section>
   </section>
 
   <!-- widok 2: jedna postać (radar + wszystkie opcje) -->
@@ -89,6 +93,28 @@
         <button class="btn btn-quiet act-window" type="button"></button>
         <button class="btn act-radar" type="button"></button>
       </div>
+      <details class="autologin">
+        <summary>Autologowanie <span class="al-state"></span></summary>
+        <form class="al-form" autocomplete="off">
+          <label>Login <input name="login" required spellcheck="false"></label>
+          <label>Hasło <input name="password" type="password" autocomplete="new-password"></label>
+          <label>Kanał
+            <select name="channel"><option value="1">CH1</option><option value="2">CH2</option><option value="3">CH3</option><option value="4">CH4</option></select>
+          </label>
+          <label>Postać
+            <select name="slot"><option value="0">1</option><option value="1">2</option><option value="2">3</option><option value="3">4</option></select>
+          </label>
+          <div class="al-checks">
+            <label class="check"><input type="checkbox" name="enabled" checked> Włączone</label>
+            <label class="check"><input type="checkbox" name="restart"> Uruchom klienta ponownie, gdy się zamknie</label>
+            <label class="check"><input type="checkbox" name="radar"> Po wejściu do gry uruchom radar</label>
+          </div>
+          <div class="al-buttons">
+            <button class="btn btn-gold" type="submit">Zapisz</button>
+            <button class="btn btn-quiet al-relog" type="button">Przeloguj teraz</button>
+          </div>
+        </form>
+      </details>
       <p class="foot"></p>
     </article>
   </template>

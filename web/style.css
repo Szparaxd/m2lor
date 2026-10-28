@@ -63,6 +63,7 @@ h1 {
   grid-template-areas:
     "portrait who actions"
     "portrait switches switches"
+    "al al al"
     "foot foot foot";
   column-gap: 18px;
   row-gap: 10px;
@@ -183,7 +184,7 @@ h1 {
 @media (max-width: 640px) {
   .plaque {
     grid-template-columns: 60px 1fr;
-    grid-template-areas: "portrait who" "switches switches" "actions actions" "foot foot";
+    grid-template-areas: "portrait who" "switches switches" "actions actions" "al al" "foot foot";
   }
   .portrait { width: 60px; height: 60px; }
   .actions { flex-wrap: wrap; }
@@ -359,3 +360,50 @@ input[type="range"] { width: 100%; accent-color: var(--gold); }
 }
 .follow .opt-head { margin: 8px 0 0; }
 .follow-actions { margin: 6px 0 4px; }
+
+/* --- autologowanie (tabliczka klienta) --- */
+.autologin { grid-area: al; border-top: 1px solid var(--wood-edge); padding-top: 8px; }
+.autologin summary { cursor: pointer; font-size: 14px; color: var(--ink-dim); }
+.autologin summary:hover { color: var(--ink); }
+.al-state { margin-left: 8px; color: var(--ink); }
+.al-state::before {
+  content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  margin-right: 6px; background: var(--wood-edge); vertical-align: 1px;
+}
+.al-state[data-tone="ok"]::before { background: var(--jade); box-shadow: 0 0 6px var(--jade); }
+.al-state[data-tone="busy"]::before { background: var(--gold); }
+.al-state[data-tone="bad"] { color: var(--danger); }
+.al-state[data-tone="bad"]::before { background: var(--danger); }
+.al-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px 14px;
+  margin-top: 10px;
+}
+.al-form label { display: grid; gap: 4px; font-size: 12.5px; color: var(--ink-dim); }
+.al-form input:not([type=checkbox]), .al-form select {
+  font: 400 14px "IBM Plex Sans", sans-serif;
+  color: var(--ink);
+  background: #140f0d;
+  border: 1px solid var(--wood-edge);
+  border-radius: 6px;
+  padding: 7px 9px;
+  min-width: 0;
+}
+.al-checks { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.al-form .check { display: inline-flex; align-items: center; gap: 7px; font-size: 13.5px; color: var(--ink); }
+.al-form .check input { accent-color: var(--jade); }
+.al-buttons { grid-column: 1 / -1; display: flex; gap: 8px; }
+.al-buttons [hidden] { display: none; }
+
+/* --- konta bez dzialajacego klienta --- */
+.accounts { margin-top: 22px; }
+.accounts h2 { font: 400 20px "Marcellus", serif; margin: 0 0 10px; }
+.account-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.account-list li {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px;
+  background: var(--wood); border: 1px solid var(--wood-edge); border-radius: var(--radius-plaque);
+  padding: 10px 14px;
+}
+.account-who { font-weight: 500; }
+.account-state { flex: 1; color: var(--ink-dim); font-size: 13px; min-width: 160px; }

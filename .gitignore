@@ -48,3 +48,8 @@ data/faces/
 data/workers/
 # Pozycje postaci dla podazania (recon/follow.py) - generowane w trakcie dzialania
 data/beacons/
+
+# Autologowanie: profile kont (haslo zaszyfrowane DPAPI) + odpowiedzi gry
+data/autologin.json
+data/autologin.json.tmp
+logs/autologin_*.txt

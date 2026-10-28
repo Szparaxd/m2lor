@@ -16,6 +16,12 @@ API (JSON):
   POST /api/clients/<pid>/radar/stop        zamknij radar (czysto, przez jego API)
   POST /api/clients/<pid>/window            {"visible": true/false} pokaz/ukryj okno gry
   POST /api/launch                          uruchom nowego klienta (launch.py --new: login recznie, radar sam)
+  GET  /api/autologin                       profile autologowania (bez hasel) + stan
+  POST /api/clients/<pid>/autologin         {"login","password","channel","slot","enabled","restart","radar"}
+  POST /api/clients/<pid>/autologin/enabled {"enabled": true/false}
+  POST /api/clients/<pid>/relog             wyloguj postac - autologowanie wejdzie od nowa (np. na inny CH)
+  POST /api/autologin/<id>/launch           uruchom klienta dla profilu (bez klienta) i zaloguj
+  POST /api/autologin/<id>/remove           usun profil
 Bezpieczenstwo: tylko 127.0.0.1, sprawdzany Host (DNS rebinding) i Origin przy POST (inne strony
 z przegladarki nie moga sterowac botem).
 """
@@ -34,6 +40,7 @@ from ctypes import wintypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
+import autologin
 import botapi
 import clients
 
@@ -116,10 +123,15 @@ class Hub:
     def __init__(self):
         self._starting = {}            # pid gry -> czas klikniecia "Uruchom radar"
         self._pool = ThreadPoolExecutor(max_workers=8)
+        # auto-logowanie: po wejsciu do gry moze sam uruchomic radar (jesli profil tego chce)
+        self.autologin = autologin.Manager(
+            radar_start=self.radar_start,
+            radar_running=lambda pid: read_worker(pid) is not None
+            or time.time() - self._starting.get(pid, 0) < START_GRACE)
 
     def _entry(self, pid, exe):
         e = {"pid": pid, "exe": exe, "window_visible": any(u32.IsWindowVisible(h) for h in game_windows(pid)),
-             "radar": "off", "snapshot": None}
+             "radar": "off", "snapshot": None, "autologin": self.autologin.for_pid(pid)}
         w = read_worker(pid)
         if w is None:
             t = self._starting.get(pid)
@@ -248,6 +260,8 @@ def make_handler(hub, port):
                 self._file(FACES_DIR, p[len("/faces/"):])
             elif p.startswith("/maps/") and p.endswith(".png"):
                 self._file(MAPS_DIR, p[len("/maps/"):])
+            elif p == "/api/autologin":
+                self._send(200, {"profiles": hub.autologin.profiles(), "channels": list(autologin.CHANNELS)})
             elif p == "/api/clients":
                 self._send(200, {"clients": hub.list(), "t": time.time()})
             elif p.startswith("/api/clients/") and p.endswith("/snapshot"):
@@ -274,6 +288,14 @@ def make_handler(hub, port):
                 body = json.loads(self.rfile.read(n) or b"{}")
                 if parts == ["api", "launch"]:
                     code, res = hub.launch()
+                elif len(parts) == 4 and parts[:2] == ["api", "autologin"]:
+                    if parts[3] == "launch":
+                        code, res = 200, hub.autologin.launch(parts[2])
+                    elif parts[3] == "remove":
+                        hub.autologin.remove(parts[2])
+                        code, res = 200, {"ok": True}
+                    else:
+                        code, res = 404, {"error": "nieznana akcja %s" % parts[3]}
                 elif len(parts) >= 4 and parts[:2] == ["api", "clients"]:
                     pid, action = int(parts[2]), "/".join(parts[3:])
                     if action == "command":
@@ -284,6 +306,13 @@ def make_handler(hub, port):
                         code, res = hub.radar_stop(pid)
                     elif action == "window":
                         code, res = hub.window(pid, bool(body.get("visible")))
+                    elif action == "autologin":
+                        hub._game(pid)
+                        code, res = 200, {"ok": True, "profile": hub.autologin.configure(pid, body)}
+                    elif action == "autologin/enabled":
+                        code, res = 200, {"ok": True, "profile": hub.autologin.set_enabled(pid, body.get("enabled"))}
+                    elif action == "relog":
+                        code, res = 200, hub.autologin.relog(pid)
                     else:
                         code, res = 404, {"error": "nieznana akcja %s" % action}
                 else:
@@ -300,8 +329,10 @@ def main():
     ap = argparse.ArgumentParser(description="Panel WWW dla wszystkich klientow gry.")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = ap.parse_args()
-    srv = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(Hub(), args.port))
+    hub = Hub()
+    srv = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(hub, args.port))
     srv.daemon_threads = True
+    hub.autologin.start()
     print("[hub] panel: http://127.0.0.1:%d  (Ctrl+C konczy; radary dzialaja dalej)" % args.port)
     try:
         srv.serve_forever()

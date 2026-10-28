@@ -46,6 +46,9 @@ const OPT = {
   move_mult: ["Mnożnik ruchu", "×", 0.1],
   atk_mult: ["Mnożnik ataku", "×", 0.1],
 };
+// stan pętli autologowania (recon/autologin.py) -> kolor znacznika
+const AL_STATE_OK = new Set(["ingame"]);
+const AL_STATE_BAD = new Set(["error", "off"]);
 const POT_SIZE_PL = { D: "Duża", "Ś": "Średnia", M: "Mała" };
 const KIND_COLOR = {
   mob: "#e2553f", boss: "#c46be0", king: "#f0a03a", special: "#3fcfb4",
@@ -158,6 +161,7 @@ const listView = {
     el.dataset.pid = pid;
     $(".open", el).href = `#/p/${pid}`;
     wireActions(el, () => pid, () => this.refresh());
+    wireAutologin(el, pid, () => this.refresh());
     return el;
   },
 
@@ -195,6 +199,7 @@ const listView = {
     el.classList.toggle("is-off", c.radar !== "on");
     renderIdentity(el, c, s, $(".open", el));
     this.renderSwitches(el, c.pid, s ? s.options : null);
+    renderAutologin(el, c.autologin);
     const foot = $(".foot", el);
     const parts = [`Klient ${c.exe}, PID ${c.pid}.`, `Radar ${RADAR_STATE[c.radar] || c.radar}.`];
     if (s && s.status) {
@@ -245,8 +250,108 @@ const listView = {
     for (const [pid, el] of this.plaques) {
       if (!seen.has(pid)) { el.remove(); this.plaques.delete(pid); }
     }
+    this.renderAccounts(seen);
+  },
+
+  // profile autologowania, których klient nie działa (zamknięty, restart wyłączony albo trwa uruchamianie)
+  async renderAccounts(running) {
+    let profiles;
+    try {
+      profiles = (await (await fetch("/api/autologin", { cache: "no-store" })).json()).profiles;
+    } catch { return; }
+    const box = $("#accounts");
+    const list = $(".account-list", box);
+    const orphans = profiles.filter((p) => !running.has(p.pid));
+    box.hidden = !orphans.length;
+    const key = JSON.stringify(orphans.map((p) => [p.id, p.login, p.channel, p.slot, p.status && p.status.text]));
+    if (list.dataset.key === key) return;
+    list.dataset.key = key;
+    list.replaceChildren();
+    for (const p of orphans) {
+      const li = document.createElement("li");
+      const who = document.createElement("span");
+      who.className = "account-who";
+      who.textContent = `${p.login} · CH${p.channel} · postać ${p.slot + 1}`;
+      const st = document.createElement("span");
+      st.className = "account-state";
+      st.textContent = p.status ? p.status.text : "";
+      const run = document.createElement("button");
+      run.type = "button";
+      run.className = "btn btn-gold";
+      run.textContent = "Uruchom klienta";
+      run.addEventListener("click", async () => {
+        run.disabled = true;
+        try {
+          await post(`/api/autologin/${p.id}/launch`);
+          showNotice(`Uruchamiam klienta dla konta ${p.login}. Zaloguje się samo.`);
+        } catch (e) { showNotice(`Uruchomienie: ${e.message}`); run.disabled = false; }
+      });
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "btn btn-quiet";
+      del.textContent = "Usuń";
+      del.addEventListener("click", async () => {
+        try { await post(`/api/autologin/${p.id}/remove`); list.dataset.key = ""; } catch (e) { showNotice(`Usuń: ${e.message}`); }
+      });
+      li.append(who, st, run, del);
+      list.append(li);
+    }
   },
 };
+
+/* ---- autologowanie na tabliczce klienta ---- */
+function wireAutologin(el, pid, afterChange) {
+  const form = $(".al-form", el);
+  form.addEventListener("input", () => { form.dataset.dirty = "1"; });
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = form.elements;
+    const btn = $("button[type=submit]", form);
+    btn.disabled = true;
+    try {
+      await post(`/api/clients/${pid}/autologin`, {
+        login: f.login.value, password: f.password.value,
+        channel: Number(f.channel.value), slot: Number(f.slot.value),
+        enabled: f.enabled.checked, restart: f.restart.checked, radar: f.radar.checked,
+      });
+      f.password.value = "";
+      delete form.dataset.dirty;
+      form.dataset.key = "";
+      showNotice(f.enabled.checked ? "Zapisane. Bot zaloguje klienta sam." : "Zapisane (autologowanie wyłączone).");
+      await afterChange();
+    } catch (e) { showNotice(`Autologowanie: ${e.message}`); }
+    btn.disabled = false;
+  });
+  $(".al-relog", form).addEventListener("click", async (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    try {
+      await post(`/api/clients/${pid}/relog`);
+      showNotice("Wylogowuję – bot zaloguje postać od nowa na ustawiony kanał.");
+    } catch (e) { showNotice(`Przelogowanie: ${e.message}`); }
+    btn.disabled = false;
+  });
+}
+
+function renderAutologin(el, al) {
+  const state = $(".al-state", el);
+  state.textContent = al ? (al.enabled ? al.status.text : "wyłączone") : "nie ustawione";
+  state.dataset.tone = !al || !al.enabled ? "" : AL_STATE_OK.has(al.status.state) ? "ok"
+    : AL_STATE_BAD.has(al.status.state) ? "bad" : "busy";
+  const form = $(".al-form", el);
+  $(".al-relog", form).hidden = !(al && al.enabled);
+  const key = JSON.stringify(al ? [al.id, al.login, al.channel, al.slot, al.enabled, al.restart, al.radar, al.has_password] : null);
+  if (form.dataset.dirty || form.dataset.key === key) return;   // nie nadpisuj tego, co user właśnie wpisuje
+  form.dataset.key = key;
+  const f = form.elements;
+  f.login.value = al ? al.login : "";
+  f.password.placeholder = al && al.has_password ? "zapisane – zostaw puste" : "";
+  f.channel.value = String(al ? al.channel : 1);
+  f.slot.value = String(al ? al.slot : 0);
+  f.enabled.checked = al ? al.enabled : true;
+  f.restart.checked = !!(al && al.restart);
+  f.radar.checked = !!(al && al.radar);
+}
 
 $("#launch").addEventListener("click", async (ev) => {
   const btn = ev.currentTarget;
