@@ -1067,6 +1067,7 @@ class RadarMap:
         self.mapout_obj = mapout if mapout is not None else self.mapout_obj
         if self.mapout_obj:
             self.collision.set_mapout(self.mapout_obj)
+            self.collision.refresh()        # tez gdy samo farmienie (bez chodzenia/siatki na ekranie)
         if player is None and player_vt is None and self.pt_ptr is not None:
             # build bez RTTI CPythonPlayer (vCore): obiekt gracza = *(base+singleton_rva). Potrzebny do
             # auto-farmu (pole auto-ataku). HP i tak idzie przez read_point_ptr - tu tylko player_obj.
@@ -1219,11 +1220,24 @@ class RadarMap:
     def _full_scale(self):
         return min(self.cw / self.map.w_px, self.ch / self.map.h_px) * self.full_zoom
 
+    def _view_center(self, hx, hy, scale):
+        """Srodek widoku FOLLOW (px obrazu mapy): gracz, ale widok nie wychodzi poza mape. Gdy okno
+        pokazuje wiecej niz mapa w danej osi (mocne oddalenie) - mapa wycentrowana w oknie. Dzieki temu
+        stojac przy krawedzi i oddalajac widac (i mozna kliknac) caly drugi koniec mapy."""
+        hix, hiy = self.map.world_to_image(hx, hy)
+        hw, hh = self.cw / 2.0 / scale, self.ch / 2.0 / scale   # pol-wymiary okna w px obrazu
+
+        def clamp(v, half, size):
+            if 2 * half >= size:
+                return size / 2.0
+            return min(max(v, half), size - half)
+        return clamp(hix, hw, self.map.w_px), clamp(hiy, hh, self.map.h_px)
+
     def world_to_canvas(self, wx, wy, hx, hy):
         ix, iy = self.map.world_to_image(wx, wy)     # piksel pelnego obrazu
         if self.mode == "follow":
-            hix, hiy = self.map.world_to_image(hx, hy)
             scale = self._follow_scale()
+            hix, hiy = self._view_center(hx, hy, scale)
             return self.cw / 2 + (ix - hix) * scale, self.ch / 2 + (iy - hiy) * scale
         else:
             s = self._full_scale()
@@ -1233,8 +1247,8 @@ class RadarMap:
         """Odwrotnosc world_to_canvas: punkt na canvasie -> wspolrzedne swiata (do waypointow)."""
         m = self.map
         if self.mode == "follow":
-            hix, hiy = m.world_to_image(hx, hy)
             scale = self._follow_scale()
+            hix, hiy = self._view_center(hx, hy, scale)
             ix = hix + (sx - self.cw / 2) / scale
             iy = hiy + (sy - self.ch / 2) / scale
         else:
@@ -1248,8 +1262,8 @@ class RadarMap:
     def _bg_image(self, hx, hy):
         """Zwraca (PhotoImage, x, y) tla dopasowanego do aktualnego widoku."""
         if self.mode == "follow":
-            hix, hiy = self.map.world_to_image(hx, hy)
             scale = self._follow_scale()
+            hix, hiy = self._view_center(hx, hy, scale)
             hw, hh = self.cw / 2.0 / scale, self.ch / 2.0 / scale   # pol-wymiary w px obrazu
             # resize(box=...) nie przyjmuje ujemnych/poza obrazem -> najpierw crop na calkowitych
             # (poza mapa wypelnia czernia), potem resize z ulamkowym box wzgledem wycinka
@@ -1280,7 +1294,8 @@ class RadarMap:
                 self.full_zoom *= 1.25
         elif k in ("minus", "kp_subtract"):
             if self.mode == "follow":
-                self.view_world = min(self.map.w_px * map_assets.WORLD_PER_PX * 1.5, self.view_world * 1.25)
+                self.view_world = min(max(self.map.w_px, self.map.h_px) * map_assets.WORLD_PER_PX * 1.5,
+                                      self.view_world * 1.25)
             else:
                 self.full_zoom /= 1.25
         elif k == "y":
@@ -1414,9 +1429,7 @@ class RadarMap:
         self._draw_learned(c, hx, hy)                     # zapamietane miejsca utkniec (fioletowe X)
 
         # gracz
-        sx, sy = self.cw / 2, self.ch / 2
-        if self.mode == "full":
-            sx, sy = self.world_to_canvas(hx, hy, hx, hy)
+        sx, sy = self.world_to_canvas(hx, hy, hx, hy)     # FOLLOW: przy krawedzi mapy gracz poza srodkiem
         c.create_polygon(sx, sy - 9, sx - 7, sy + 7, sx + 7, sy + 7, fill="#39ff6a", outline="#000")
 
         lx = (hx - self.map.bx) / map_assets.WORLD_PER_PX
@@ -1970,6 +1983,7 @@ class RadarMap:
                 r = r[1:]
             self._eng_route = r
             return r or None
+        self.collision.refresh()            # aktualny cur/m_pTerrain (inaczej mapowanie sektorow sprzed skanu)
         obst = self._entity_obstacles(hx, hy, include_mobs=True, exclude=(tx, ty), exclude_r=350.0)
         t0 = time.time()
         hard, blobs = self._hard_obstacles(hx, hy, tx, ty, exclude=(tx, ty), exclude_r=350.0)
@@ -2174,8 +2188,7 @@ class RadarMap:
         tgt = self._combat_target                 # krotka podmieniana przez petle - jeden odczyt
         if tgt is None or not (self.farm_on or (self.autowalk_on and self.walk_fight)):
             return
-        hsx, hsy = ((self.cw / 2, self.ch / 2) if self.mode == "follow"
-                    else self.world_to_canvas(hx, hy, hx, hy))
+        hsx, hsy = self.world_to_canvas(hx, hy, hx, hy)
         route = self._eng_route
         if route:
             rp = [(hsx, hsy)] + [self.world_to_canvas(rx, ry, hx, hy) for rx, ry in route]
@@ -2216,8 +2229,7 @@ class RadarMap:
             c.create_text(sx, sy - r - 6, fill=col, text=str(i + 1), font=("Consolas", 8, "bold"))
         # wyliczona trasa A* (omijanie scian) - cienka pomaranczowa linia od gracza przez punkty trasy
         if self._route and self.autowalk_on:
-            rp = [(self.cw / 2, self.ch / 2) if self.mode == "follow"
-                  else self.world_to_canvas(hx, hy, hx, hy)]
+            rp = [self.world_to_canvas(hx, hy, hx, hy)]
             rp += [self.world_to_canvas(rx, ry, hx, hy) for rx, ry in self._route]
             flat = [v for p in rp for v in p]
             c.create_line(*flat, fill="#ff9f1a", width=2)

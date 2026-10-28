@@ -12,6 +12,7 @@ terenow, curX/curY) chroni RLock. A* liczy na lokalnej kopii siatki (numpy), juz
 """
 import heapq
 import math
+import struct
 import threading
 import time
 
@@ -22,6 +23,7 @@ CELL = 100
 NCELL = 256
 BLOCK = 0x01
 WATER = 0x02
+TERR_SETTLE = 3.0     # s: max czekania na przestawienie m_pTerrain po zmianie cur (wczytywanie sektorow)
 NONE_RETRY = 1.0      # s: niezaladowany sektor (None) sprawdzamy ponownie po tym czasie (nie cache'ujemy na stale)
 MAX_EXPAND = 20000    # limit rozwinietych wezlow A* (ochrona CPU przy nieosiagalnym celu)
 LOS_WINDOW = 40       # wygladzanie LOS: sprawdzaj najwyzej tyle komorek do przodu (zamiast O(n^2) do konca)
@@ -46,6 +48,8 @@ class Collision:
         self._lock = threading.RLock()
         self._terr = {}         # (tcx,tcy) -> (np.uint8[256,256] (ly,lx) albo None, czas odczytu)
         self._cur = None        # (curX,curY) gdy cache terenow aktualny
+        self._ptrs = None       # m_pTerrain[9] z ostatniego refresh() (zmiana -> cache nieaktualny)
+        self._settle_until = 0.0  # do tej chwili cur juz nowy, a wskazniki stare -> tereny niepewne
         self.countX = self.countY = 0
         self.curX = self.curY = 0
 
@@ -55,6 +59,7 @@ class Collision:
                 self.mapout = mapout
                 self._terr.clear()
                 self._cur = None
+                self._ptrs = None
 
     def refresh(self):
         """Odczyt pol CMapOutdoor; gdy zmienil sie curCoord (gracz przeszedl sektor) - wyczysc cache."""
@@ -62,19 +67,32 @@ class Collision:
             if not self.ok or not self.mapout:
                 return False
             m, o = self.mapout, self.off
+            # JEDEN odczyt: m_pTerrain[9] + count + cur (spojna migawka zamiast osobnych odczytow)
+            lo = o["terrain_arr"]
             try:
-                countX = self.pm.read_short(m + o["count"])
-                countY = self.pm.read_short(m + o["count"] + 2)
-                cx = self.pm.read_short(m + o["cur"])
-                cy = self.pm.read_short(m + o["cur"] + 2)
+                raw = self.pm.read_bytes(m + lo, o["cur"] + 4 - lo)
             except Exception:
                 return False
+            ptrs = struct.unpack_from("<9I", raw, 0)
+            countX, countY = struct.unpack_from("<2h", raw, o["count"] - lo)
+            cx, cy = struct.unpack_from("<2h", raw, o["cur"] - lo)
             self.countX, self.countY = countX, countY
             # curX/curY PRZED czyszczeniem cache: _terrain liczy slot 3x3 wzgledem nich
             self.curX, self.curY = cx, cy
+            # Klient (CMapOutdoor::Update) najpierw ustawia NOWY cur, potem wczytuje sektory, a dopiero na
+            # koncu AssignTerrainPtr przestawia m_pTerrain[9]. W tym oknie slot wyliczony z nowego cur wskazuje
+            # teren SASIEDNIEGO sektora - wczesniej trafial do cache na stale (zly sektor -> A* przez wode).
+            # Dlatego cache czyscimy przy zmianie cur ORAZ przy kazdej zmianie wskaznikow, a gdy cur sie zmienil,
+            # a wskazniki jeszcze nie - nie ufamy terenom (None) do ich przestawienia (max TERR_SETTLE s).
             if (cx, cy) != self._cur:
+                if self._cur is not None and ptrs == self._ptrs:
+                    self._settle_until = time.time() + TERR_SETTLE
                 self._cur = (cx, cy)
                 self._terr.clear()
+            elif ptrs != self._ptrs:
+                self._settle_until = 0.0
+                self._terr.clear()
+            self._ptrs = ptrs
             return True
 
     def _terrain(self, tcx, tcy):
@@ -87,9 +105,10 @@ class Collision:
                 return hit[0]
             arr = None
             num = (tcy - self.curY + 1) * 3 + (tcx - self.curX + 1)
-            if 0 <= tcx - self.curX + 1 < 3 and 0 <= num < 9:
+            settling = time.time() < self._settle_until      # cur nowy, wskazniki stare -> nie zgaduj
+            if 0 <= tcx - self.curX + 1 < 3 and 0 <= num < 9 and self._ptrs and not settling:
                 try:
-                    p = self.pm.read_uint(self.mapout + self.off["terrain_arr"] + num * 4)
+                    p = self._ptrs[num]                     # z migawki refresh(), spojnej z curX/curY
                     if 0x10000 < p < 0x7FFF0000:
                         raw = self.pm.read_bytes(p + self.off["attr"], NCELL * NCELL)
                         arr = np.frombuffer(raw, dtype=np.uint8).reshape(NCELL, NCELL)
