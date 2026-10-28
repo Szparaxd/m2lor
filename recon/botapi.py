@@ -49,6 +49,9 @@ OPTIONS = {
     "farm_radius":   (int,   "farm_radius",   "farmr_var",         "_on_farmr",          (500, 6000)),
     "farm_metin":    (bool,  "farm_metin",    "farm_metin_var",    "_on_farm_metin",     None),
     "farm_boss":     (bool,  "farm_boss",     "farm_boss_var",     "_on_farm_boss",      None),
+    "area_atk":      (bool,  "area_atk_on",     "area_atk_var",      "_on_area_atk_check",  None),
+    "area_atk_radius": (int, "area_atk_radius", "area_atk_r_var",    "_on_area_atk_radius", (300, 8000)),
+    "area_atk_mode": (str,   "area_atk_mode",   "area_atk_mode_var", "_on_area_atk_mode",   None),
     "prep_dismount": (bool,  "prep_dismount", "prep_dismount_var", "_on_prep_opts",      None),
     "prep_buffs":    (bool,  "prep_buffs",    "prep_buffs_var",    "_on_prep_opts",      None),
     "prep_remount":  (bool,  "prep_remount",  "prep_remount_var",  "_on_prep_opts",      None),
@@ -58,7 +61,7 @@ OPTIONS = {
     "autobuff":      (bool,  "autobuff.on",   "autobuff_var",      "_on_autobuff_check", None),
 }
 _SLIDER_HANDLERS = {"_on_low", "_on_high", "_on_cd", "_on_loot_cd", "_on_loot_radius", "_on_farmr", "_on_movx",
-                    "_on_atkx"}
+                    "_on_atkx", "_on_area_atk_radius"}
 
 
 def _get(obj, dotted):

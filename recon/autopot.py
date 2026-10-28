@@ -322,16 +322,24 @@ class PipeDrinker:
 _DRINK_BY_VNUM_TEMPLATE = r'''import player, net
 _VNS = [__VNS__]
 _N = player.INVENTORY_PAGE_SIZE * player.INVENTORY_PAGE_COUNT
+_best = None
 for _s in range(_N):
-    if player.GetItemIndex(_s) in _VNS and player.GetItemCount(_s) > 0:
-        net.SendItemUsePacket(_s)
-        break
+    _v = player.GetItemIndex(_s)
+    if _v in _VNS and player.GetItemCount(_s) > 0:
+        _r = _VNS.index(_v)
+        if _best is None or _r < _best[0]:
+            _best = (_r, _s)
+            if _r == 0:
+                break
+if _best is not None:
+    net.SendItemUsePacket(_best[1])
 '''
 
 
 def drink_by_vnum(pid, vnums):
-    """Wypij w grze o danym PID pierwsza miksture o jednym z podanych vnum, prosto z ekwipunku
-    (ignoruje pasek). vnums - lista vnum. True gdy komenda dotarla do DLL."""
+    """Wypij w grze o danym PID miksture o jednym z podanych vnum, prosto z ekwipunku (ignoruje
+    pasek). vnums - lista vnum w kolejnosci priorytetu (pierwszy obecny w EQ wygrywa).
+    True gdy komenda dotarla do DLL."""
     if not vnums:
         return False
     vns = ",".join(str(int(v)) for v in vnums)
@@ -344,6 +352,111 @@ def pick_close_item(pid):
     pickup (SendItemPickUpPacket). Jedno wywolanie = jeden przedmiot; wielokrotnie = kolejne.
     Dziala tam, gdzie pending-calls sa opruzniane (GameCoreTop). True gdy komenda dotarla do DLL."""
     return send_command(pid, "import player\nplayer.PickCloseItem()")
+
+
+# Przedmioty na ziemi: CPythonItem (singleton, brak RTTI) -> std::map<VID, SGroundItemInstance*>
+# m_GroundItemInstanceMap @ obj+4 (MSVC: head; wezel _Left@0 _Parent@4 _Right@8, isnil@+0xD, VID@+0x10,
+# wskaznik@+0x14). Instancja: vtable@0, vnum@+4, v3EndPosition x@+8, -y@+0xC. Wlasciciel dropu =
+# std::string stOwnership (pusty = wolny). RVA singletona z CPythonPlayer::PickCloseItem
+# (mov esi,[sing] przed CPythonItem::GetCloseItem); zweryfikowane statycznie (pefile+capstone).
+GROUND_ITEM_CLIENTS = {
+    "gamecoretop.exe": dict(sing=0x48E120, owner=0x2F8),  # owner zweryf. na zywo (cap=15 @+0x30C, pusty)
+    "vcore.exe": dict(sing=0x1B8E06C, owner=0x2FC),       # owner z wbudowanego "podnies wszystko" vCore
+}
+_OWNER_CANDS = (0x2FC, 0x2F8, 0x300)
+GROUND_MAX = 400          # bezpiecznik przechodzenia drzewa (smieci w pamieci)
+
+
+def _owner_str(pm, a):
+    """stOwnership (MSVC std::string): '' = wolny, nick = czyj, None = to nie jest std::string."""
+    try:
+        size, cap = pm.read_uint(a + 0x10), pm.read_uint(a + 0x14)
+        if cap == 15 and size <= 15:
+            return pm.read_bytes(a, size).decode("cp1250", "replace") if size else ""
+        if 16 <= cap < 0x1000 and size <= cap:
+            return pm.read_bytes(pm.read_uint(a), size).decode("cp1250", "replace")
+    except Exception:
+        pass
+    return None
+
+
+def read_ground_items(pm, base, cfg):
+    """Lista (vid, vnum, wx, wy, owner) przedmiotow na ziemi (wsp. radaru). owner: '' wolny, nick, albo
+    None gdy offset wlasciciela nieznany. cfg - wpis GROUND_ITEM_CLIENTS (owner wykrywany i zapamietany)."""
+    obj = pm.read_uint(base + cfg["sing"])
+    if not obj:
+        return []
+    head = pm.read_uint(obj + 4)
+    if not head or pm.read_uint(obj + 8) > GROUND_MAX:
+        return []
+    out, stack, seen = [], [pm.read_uint(head + 4)], 0
+    while stack and seen < GROUND_MAX:
+        n = stack.pop()
+        if not n or n == head or pm.read_bytes(n + 0xD, 1)[0]:
+            continue
+        seen += 1
+        stack.append(pm.read_uint(n))
+        stack.append(pm.read_uint(n + 8))
+        inst = pm.read_uint(n + 0x14)
+        if not inst:
+            continue
+        x, ny = struct.unpack("<2f", pm.read_bytes(inst + 8, 8))
+        out.append([pm.read_uint(n + 0x10), pm.read_uint(inst + 4), x, -ny, inst])
+    if out and cfg.get("owner") is None and not cfg.get("owner_tried"):
+        for off in _OWNER_CANDS:         # offset, pod ktorym WSZYSTKIE instancje maja poprawny std::string
+            if all(_owner_str(pm, it[4] + off) is not None for it in out):
+                cfg["owner"] = off
+                print("[loot] wlasciciel dropu: offset %#x" % off)
+                break
+        cfg["owner_tried"] = True
+    off = cfg.get("owner")
+    return [(v, vn, x, y, _owner_str(pm, inst + off) if off else None) for v, vn, x, y, inst in out]
+
+
+def pick_up_vids(pid, vids):
+    """GameCoreTop: wyslij pakiet podniesienia dla KAZDEGO VID naraz (net.SendItemPickUpPacket).
+    Omija klienckie 'najblizszy w zasiegu 300' - zasieg i wlasciciela sprawdza juz tylko serwer."""
+    if not vids:
+        return False
+    return send_command(pid, "import net\nfor _v in (%s,):\n    net.SendItemPickUpPacket(_v)"
+                        % ",".join(str(int(v)) for v in vids))
+
+
+def tpick(pid, wx, wy, vids):
+    """GameCoreTop: 'skok-podnies-powrot' - DLL w jednej klatce wysyla serwerowi ruch na (wx,wy), pakiety
+    podniesienia dla vids i ruch z powrotem. Lokalnie postac stoi. Zasieg ~300 serwer liczy od (wx,wy)."""
+    if not vids:
+        return False
+    return send_command(pid, "!tpick %.0f %.0f %s" % (wx, wy, " ".join(str(int(v)) for v in vids[:32])))
+
+
+def has_tpick(pid):
+    """True, gdy wstrzyknieta DLL zna '!tpick' (znacznik logs/caps_<pid>.ok; stara DLL go nie pisze)."""
+    try:
+        with open(os.path.join(os.path.dirname(INV_DUMP_PATH), "caps_%d.ok" % pid)) as fh:
+            return "tpick" in fh.read()
+    except OSError:
+        return False
+
+
+def has_attack(pid):
+    """True, gdy wstrzyknieta DLL zna '!attack' (masowy atak pakietem; znacznik caps_<pid>.ok)."""
+    try:
+        with open(os.path.join(os.path.dirname(INV_DUMP_PATH), "caps_%d.ok" % pid)) as fh:
+            return "attack" in fh.read()
+    except OSError:
+        return False
+
+
+def attack_vids(pid, vids, mot=0):
+    """GameCoreTop: wyslij pakiet ataku do KAZDEGO VID (CPythonNetworkStream::SendAttackPacket).
+    Bije moby BEZ lokalnej animacji i BEZ ruchu postaci - omija sciezke wejscia OnHit. mot=0 = cios
+    zwykly (serwer liczy zwykle obrazenia broni). Zasieg/cooldown waliduje serwer: bez ruchu trafiaja
+    tylko moby w serwerowym zasiegu wrecz. vids obcinane do 64 na komende. True gdy komenda dotarla."""
+    if not vids:
+        return False
+    return send_command(pid, "!attack %d %s" % (int(mot),
+                        " ".join(str(int(v)) for v in vids[:64])))
 
 
 def pick_close_item_native(pid):
@@ -465,6 +578,49 @@ def drink_native(pid, slot):
     komende '!drink N' - DLL ustawia flage, hook wykonuje przy najblizszej klatce. slot = indeks
     slotu paska (0..7)."""
     return send_command(pid, "!drink %d" % int(slot))
+
+
+def hook_has_skill(pid):
+    """True, gdy wstrzyknieta DLL zna komende '!skill' (marker hooka zawiera 'skill'). Stara DLL
+    zostaje w procesie do restartu gry - wtedy marker to samo 'ok'."""
+    mk = os.path.join(os.path.dirname(INV_DUMP_PATH), "hook_%d.ok" % pid)
+    try:
+        with open(mk) as fh:
+            return "skill" in fh.read()
+    except OSError:
+        return False
+
+
+def hook_has_chat(pid):
+    """True, gdy wstrzyknieta DLL zna komende '!chat' (marker hooka zawiera 'chat')."""
+    mk = os.path.join(os.path.dirname(INV_DUMP_PATH), "hook_%d.ok" % pid)
+    try:
+        with open(mk) as fh:
+            return "chat" in fh.read()
+    except OSError:
+        return False
+
+
+def chat_native(pid, text):
+    """vCore: komenda czatu (np. '/unmount', '/ride') natywnie z hooka: CPythonNetworkStream::SendChatPacket."""
+    return send_command(pid, "!chat %s" % text)
+
+
+def chat_py(pid, text):
+    """GameCoreTop: j.w. przez Pythona gry (pending-call): net.SendChatPacket(text)."""
+    return send_command(pid, "import net\nnet.SendChatPacket(%r)" % text)
+
+
+def use_skill_native(pid, slot):
+    """vCore: uzyj umiejetnosci ze slotu UMIEJETNOSCI (nie paska) natywnie z hooka per-klatka:
+    CPythonPlayer::ClickSkillSlot(slot) = to samo co klik w okno umiejetnosci (animacja, cooldown,
+    pakiet). Radar musi sam sprawdzic kon/cooldown/aktywny buff (klik aktywnego TOGGLE go WYLACZA)."""
+    return send_command(pid, "!skill %d" % int(slot))
+
+
+def use_skill_py(pid, slot):
+    """GameCoreTop: j.w. przez Pythona gry (pending-call): player.ClickSkillSlot(slot)."""
+    return send_command(pid, "import player\nplayer.ClickSkillSlot(%d)" % int(slot))
 
 
 def dump_inventory(pid, timeout=3.0):

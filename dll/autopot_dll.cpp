@@ -126,6 +126,7 @@ static bool resolve_python(void)
 #define VCORE_HOOK_RVA             0xB3B60
 #define VCORE_RULQS_RVA            0x81190        // RequestUseLocalQuickSlot (__thiscall, 1 arg, ret 4)
 #define VCORE_PICK_RVA             0x83750        // CPythonPlayer::PickCloseItem (__thiscall, 0 arg, ret)
+#define VCORE_CLICKSKILL_RVA       0x8AD40        // CPythonPlayer::ClickSkillSlot (__thiscall, 1 arg = slot, ret 4)
 #define VCORE_MOVETO_RVA           0x325F0        // CInstanceBase::NEW_MoveToDestPixelPositionDirection (thiscall, arg TPixelPosition*)
 #define VCORE_GETPOS_RVA           0x32BA0        // CInstanceBase::NEW_GetPixelPosition (thiscall, arg float[3] out)
 #define VCORE_GETMAIN_VIDX         0x88           // bajtowy indeks wirtualnej GetMainActorPtr w vtable [player+4]
@@ -136,6 +137,17 @@ static const unsigned char VCORE_PROLOGUE[5] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF};
 static uintptr_t g_hook_rva = VCORE_HOOK_RVA;
 static uintptr_t g_pick_rva = VCORE_PICK_RVA;
 static uintptr_t g_sing_rva = VCORE_PLAYER_SINGLETON_RVA;
+static uintptr_t g_skill_rva = VCORE_CLICKSKILL_RVA;
+// Komendy czatu (/unmount, /ride): CPythonNetworkStream::SendChatPacket(this, const char *, BYTE type),
+// __thiscall. vCore (2026-10-28): fn RVA 0xD6CC0, this = *(base+0x1B8DE90) - z wrappera net.SendChatPacket;
+// DLL szuka ich sygnatura (resolve_vcore_chat), stale = fallback.
+#define VCORE_CHAT_RVA             0xD6CC0
+#define VCORE_NETSTREAM_RVA        0x1B8DE90
+static uintptr_t g_chat_rva = VCORE_CHAT_RVA;
+static uintptr_t g_net_rva = VCORE_NETSTREAM_RVA;
+typedef void(__thiscall *PFN_SENDCHAT)(void *self, const char *text, unsigned char type);
+static volatile LONG g_want_chat = 0;
+static char g_chat_text[128];                    // tekst komendy czatu dla hooka (np. "/unmount")
 
 // GameCoreTop.exe (INNY build; ImageBase 0x400000). Ruch natywny NIE przez hook (go nie ma), lecz przez
 // Py_AddPendingCall (pending-calls sa tu opruzniane). Adresy: analiza binarki od eksportu player.PickCloseItem.
@@ -145,8 +157,35 @@ static uintptr_t g_sing_rva = VCORE_PLAYER_SINGLETON_RVA;
 #define GC_GETPOS_RVA              0xA70D0         // NEW_GetPixelPosition (ret 4)
 #define GC_GETMAIN_VIDX            0x88
 
+// PODMIANA POZYCJI do dalekiego lootu (GameCoreTop, 2026-10-28). Serwer liczy zasieg podnoszenia (~300) od
+// SWOJEJ pozycji postaci, a te ustawia z pakietu ruchu (HEADER_CG_CHARACTER_MOVE=7). "!tpick x y vid..." w
+// JEDNEJ klatce glownego watku wysyla: ruch FUNC_WAIT na (x,y) -> pakiety podniesienia -> ruch FUNC_WAIT z
+// powrotem na biezaca pozycje. Lokalna postac w kliencie sie nie rusza. Adresy (pefile+capstone):
+// SendCharacterStatePacket - funkcja z xrefem napisu "CPythonNetworkStream::SendCharacterStatePacket(dwCmdTime",
+// thiscall(this, TPixelPosition*, float rot, UINT func, UINT arg), ret 0x10; SendItemPickUpPacket - z wrappera
+// net.SendItemPickUpPacket (mov ecx,[0x48DFF8]; call). Pozycja w konwencji RADARU (= NEW_GetPixelPosition).
+#define GC_NETSTREAM_RVA           0x48DFF8        // *(void**) = CPythonNetworkStream*
+#define GC_SENDSTATE_RVA           0x1162C0
+#define GC_SENDPICKUP_RVA          0x11A1A0
+#define FUNC_WAIT_STATE            0
+#define TPICK_MAX                  32
+typedef bool(__thiscall *PFN_SENDSTATE)(void *self, const float *pos3, float rot, unsigned func, unsigned arg);
+typedef bool(__thiscall *PFN_SENDPICKUP)(void *self, unsigned vid);
+struct TPickArg { float x, y; int n; unsigned vids[TPICK_MAX]; };
+
+// Masowy atak pakietem (GameCoreTop): CPythonNetworkStream::SendAttackPacket(UINT uMotAttack, DWORD dwVID)
+// buduje TPacketCGAttack {HEADER_CG_ATTACK, bType, VID} i wysyla - BEZ lokalnej animacji/ruchu (omijamy
+// sciezke wejscia OnHit). net NIE eksportuje jej do Pythona -> wolamy natywnie. uMotAttack=0 = cios zwykly.
+// RVA namierzone po stringu "Send Battle Attack Packet Error" (Tracen w ciele): base+0x116160, __thiscall,
+// ret 8. this = singleton netstream (GC_NETSTREAM_RVA, ten sam co SendState/SendPickUp). TYLKO glowny watek.
+#define GC_SENDATTACK_RVA          0x116160
+#define ATTACK_MAX                 64
+typedef bool(__thiscall *PFN_SENDATTACK)(void *self, unsigned motAttack, unsigned vid);
+struct TAttackArg { unsigned mot; int n; unsigned vids[ATTACK_MAX]; };
+
 typedef void(__thiscall *PFN_RULQS)(void *self, unsigned idx);
 typedef void(__thiscall *PFN_PICK)(void *self);     // PickCloseItem - bez argumentow
+typedef void(__thiscall *PFN_CLICKSKILL)(void *self, unsigned slot);  // ClickSkillSlot - jak klik w okno umiejetnosci
 typedef void *(__thiscall *PFN_GETMAIN)(void *self); // zwraca CInstanceBase* glownej postaci
 typedef void (__thiscall *PFN_GETPOS)(void *self, float *out3);  // out3 = x, y(=-worldY), z
 typedef void (__thiscall *PFN_MOVETO)(void *self, float *dst3);  // idz do punktu (konwencja jak GetPos)
@@ -156,7 +195,9 @@ static volatile LONG g_want_drink = 0;
 static volatile LONG g_want_pick = 0;
 static volatile LONG g_want_goto = 0;
 static volatile LONG g_want_getpos = 0;
+static volatile LONG g_want_skill = 0;
 static int g_slot = 0;
+static int g_skill_slot = 0;                     // slot UMIEJETNOSCI (indeks aSkill), nie paska
 static float g_goto_x = 0.0f, g_goto_y = 0.0f;   // cel w konwencji RADARU (worldX, worldY)
 static void *g_tramp = NULL;
 static bool g_is_vcore = false;                  // ktory build -> zestaw RVA + droga wykonania
@@ -214,10 +255,53 @@ static int __cdecl pending_goto(void *arg)
     free(g);
     return 0;
 }
+// Skok-podnies-powrot (patrz GC_SENDSTATE_RVA). TYLKO glowny watek (bufor pakietow bez blokad).
+static int __cdecl pending_tpick(void *arg)
+{
+    struct TPickArg *t = (struct TPickArg *)arg;
+    void *self = get_main_char();
+    void *net = *(void **)(g_base + GC_NETSTREAM_RVA);
+    if (self && net) {
+        float cur[3] = {0, 0, 0};
+        ((PFN_GETPOS)(g_base + GC_GETPOS_RVA))(self, cur);
+        float dst[3] = {t->x, t->y, cur[2]};
+        PFN_SENDSTATE st = (PFN_SENDSTATE)(g_base + GC_SENDSTATE_RVA);
+        PFN_SENDPICKUP pk = (PFN_SENDPICKUP)(g_base + GC_SENDPICKUP_RVA);
+        bool a = st(net, dst, 0.0f, FUNC_WAIT_STATE, 0);
+        for (int i = 0; i < t->n; ++i)
+            pk(net, t->vids[i]);
+        bool b = st(net, cur, 0.0f, FUNC_WAIT_STATE, 0);
+        dbg("tpick: (%.0f,%.0f) -> (%.0f,%.0f) vid x%d -> powrot; state %d/%d",
+            cur[0], cur[1], t->x, t->y, t->n, (int)a, (int)b);
+    } else {
+        dbg("tpick: brak postaci/sieci (self=%p net=%p)", self, net);
+    }
+    free(t);
+    return 0;
+}
+
 static int __cdecl pending_getpos(void *arg)
 {
     (void)arg;
     do_getpos();
+    return 0;
+}
+
+// Masowy atak: dla kazdego VID wyslij pakiet ataku. TYLKO glowny watek (bufor pakietow bez blokad).
+// Serwer waliduje dystans/cooldown - my tylko proponujemy; radar decyduje tempo (throttle/tryb).
+static int __cdecl pending_attack(void *arg)
+{
+    struct TAttackArg *a = (struct TAttackArg *)arg;
+    void *net = *(void **)(g_base + GC_NETSTREAM_RVA);
+    if (net) {
+        PFN_SENDATTACK atk = (PFN_SENDATTACK)(g_base + GC_SENDATTACK_RVA);
+        for (int i = 0; i < a->n; ++i)
+            atk(net, a->mot, a->vids[i]);
+        dbg("attack: mot=%u vid x%d", a->mot, a->n);
+    } else {
+        dbg("attack: brak sieci (net=NULL)");
+    }
+    free(a);
     return 0;
 }
 
@@ -235,6 +319,19 @@ static __declspec(noinline) void on_frame(void)
         void *self = *(void **)(g_base + g_sing_rva);
         if (self)
             ((PFN_PICK)(g_base + g_pick_rva))(self);
+    }
+    // umiejetnosc: ClickSkillSlot = ta sama sciezka co klik w okno umiejetnosci (animacja, lokalny
+    // cooldown, pakiet). Radar sam sprawdza kon/cooldown/aktywny buff - tu tylko wykonanie. "!skill N".
+    if (InterlockedExchange(&g_want_skill, 0)) {
+        void *self = *(void **)(g_base + g_sing_rva);
+        if (self)
+            ((PFN_CLICKSKILL)(g_base + g_skill_rva))(self, (unsigned)g_skill_slot);
+    }
+    // komenda czatu (zsiadanie/wsiadanie z konia: "/unmount", "/ride") - pakiet czatu z glownego watku.
+    if (InterlockedExchange(&g_want_chat, 0)) {
+        void *net = *(void **)(g_base + g_net_rva);
+        if (net)
+            ((PFN_SENDCHAT)(g_base + g_chat_rva))(net, g_chat_text, 0);   // 0 = CHAT_TYPE_TALKING
     }
     // kanarek (!getpos) i ruch (!goto) - wspolne helpery (vCore: stad z hooka; GameCoreTop: z pending-call)
     if (InterlockedExchange(&g_want_getpos, 0))
@@ -347,16 +444,88 @@ static void resolve_vcore_rvas(void)
             g_sing_rva = (uintptr_t)(sing - g_base);
             g_pick_rva = (uintptr_t)(pick - g_base);
             dbg("sig: singleton = base+0x%X, PickCloseItem = base+0x%X", (unsigned)g_sing_rva, (unsigned)g_pick_rva);
-            return;
+            goto skill;
         }
     }
     dbg("sig: PyMethodDef PickCloseItem nie znaleziony - zostaja stale");
+skill:
+    // 3) ClickSkillSlot: wrapper najpierw parsuje argument (PyTuple_GetInteger), potem
+    //    push [ebp-8] | 8B 0D <&singleton> | E8 <ClickSkillSlot>. Szukamy w pierwszych 0x80 bajtach
+    //    wrappera "8B 0D <singleton gracza> E8" - singleton z kroku 2 odroznia modul player od
+    //    innych PyMethodDef o tej samej nazwie (sa co najmniej 3).
+    unsigned char *want = g_base + g_sing_rva;
+    static const char sk[] = "ClickSkillSlot";
+    for (unsigned char *p = rlo + 1; p + sizeof(sk) <= rhi; ++p) {
+        if (p[-1] != 0 || memcmp(p, sk, sizeof(sk)) != 0)
+            continue;
+        for (unsigned char *q = dlo; q + 8 <= dhi; q += 4) {
+            if (*(unsigned char **)q != p)
+                continue;
+            unsigned char *fn = *(unsigned char **)(q + 4);
+            if (fn < tlo || fn + 0x80 > thi)
+                continue;
+            for (unsigned char *c = fn; c < fn + 0x80 - 11; ++c) {
+                if (c[0] != 0x8B || c[1] != 0x0D || *(unsigned char **)(c + 2) != want || c[6] != 0xE8)
+                    continue;
+                unsigned char *tgt = c + 11 + *(int32_t *)(c + 7);
+                if (tgt < tlo || tgt >= thi)
+                    continue;
+                g_skill_rva = (uintptr_t)(tgt - g_base);
+                dbg("sig: ClickSkillSlot = base+0x%X", (unsigned)g_skill_rva);
+                return;
+            }
+        }
+    }
+    dbg("sig: ClickSkillSlot nie znaleziony - zostaje 0x%X", (unsigned)g_skill_rva);
+}
+
+// SendChatPacket: wrapper PyMethodDef "SendChatPacket" (modul net) po sparsowaniu argumentow robi
+//   8B 0D <&CPythonNetworkStream singleton> | push typ | push tekst | E8 <SendChatPacket>.
+// Szukamy w pierwszych 0x100 bajtach wrappera "8B 0D" z E8 w nastepnych 12 bajtach.
+static void resolve_vcore_chat(void)
+{
+    unsigned char *tlo, *thi, *rlo, *rhi, *dlo, *dhi;
+    if (!sec_range(".text", &tlo, &thi) || !sec_range(".rdata", &rlo, &rhi) || !sec_range(".data", &dlo, &dhi))
+        return;
+    static const char nm[] = "SendChatPacket";
+    for (unsigned char *p = rlo + 1; p + sizeof(nm) <= rhi; ++p) {
+        if (p[-1] != 0 || memcmp(p, nm, sizeof(nm)) != 0)
+            continue;
+        for (unsigned char *q = dlo; q + 8 <= dhi; q += 4) {
+            if (*(unsigned char **)q != p)
+                continue;
+            unsigned char *fn = *(unsigned char **)(q + 4);
+            if (fn < tlo || fn + 0x100 > thi)
+                continue;
+            for (unsigned char *c = fn; c < fn + 0x100 - 18; ++c) {
+                if (c[0] != 0x8B || c[1] != 0x0D)
+                    continue;
+                unsigned char *net = *(unsigned char **)(c + 2);
+                if (net < dlo || net >= dhi)
+                    continue;
+                for (unsigned char *e = c + 6; e < c + 18; ++e) {
+                    if (*e != 0xE8)
+                        continue;
+                    unsigned char *tgt = e + 5 + *(int32_t *)(e + 1);
+                    if (tgt < tlo || tgt >= thi)
+                        continue;
+                    g_net_rva = (uintptr_t)(net - g_base);
+                    g_chat_rva = (uintptr_t)(tgt - g_base);
+                    dbg("sig: SendChatPacket = base+0x%X, NetworkStream = base+0x%X", (unsigned)g_chat_rva,
+                        (unsigned)g_net_rva);
+                    return;
+                }
+            }
+        }
+    }
+    dbg("sig: SendChatPacket nie znaleziony - zostaje 0x%X", (unsigned)g_chat_rva);
 }
 
 static void install_vcore_hook(void)
 {
     g_base = (unsigned char *)GetModuleHandleA(NULL);     // baza glownego exe (vCore.exe)
     resolve_vcore_rvas();
+    resolve_vcore_chat();
     unsigned char *target = g_base + g_hook_rva;
     if (memcmp(target, VCORE_PROLOGUE, 5) != 0) {
         dbg("hook: prolog @0x%X nie pasuje (inny build vCore?) - rezygnuje", (unsigned)g_hook_rva);
@@ -388,7 +557,7 @@ static void install_vcore_hook(void)
     _snprintf(mk, sizeof(mk), "C:\\Metin\\radar-project\\logs\\hook_%lu.ok", GetCurrentProcessId());
     FILE *f = fopen(mk, "w");
     if (f) {
-        fputs("ok", f);
+        fputs("ok skill chat", f);     // "skill"/"chat" = ta DLL zna komendy !skill / !chat (radar sprawdza)
         fclose(f);
     }
 }
@@ -414,8 +583,18 @@ static DWORD WINAPI server_thread(LPVOID)
     dbg("server start, pipe=%s (vcore=%d)", pipe_name, (int)g_is_vcore);
     // vCore: hook per-klatka (natywne wywolania bez fokusu). GameCoreTop: brak hooka - ruch/getpos ida
     // przez Py_AddPendingCall (pending-calls sa tu opruzniane), picie/loot przez Pythona.
-    if (g_is_vcore)
+    if (g_is_vcore) {
         install_vcore_hook();
+    } else {
+        // GameCoreTop: znacznik mozliwosci tej DLL (radar sprawdza, czy wstrzyknieta wersja zna "!tpick")
+        char mk[MAX_PATH];
+        _snprintf(mk, sizeof(mk), "C:\\Metin\\radar-project\\logs\\caps_%lu.ok", GetCurrentProcessId());
+        FILE *f = fopen(mk, "w");
+        if (f) {
+            fputs("tpick attack", f);
+            fclose(f);
+        }
+    }
     // python27.dll jest ladowany wczesnie, ale czekamy spokojnie az bedzie gotowy (max ~60 s).
     for (int i = 0; i < 600 && !resolve_python(); ++i)
         Sleep(100);
@@ -458,6 +637,17 @@ static DWORD WINAPI server_thread(LPVOID)
                                 g_slot = atoi(cmd + 6);
                                 InterlockedExchange(&g_want_drink, 1);
                                 dbg("native drink: slot=%d (flaga dla hooka)", g_slot);
+                            } else if (strncmp(cmd, "!chat ", 6) == 0) {
+                                // "!chat /unmount" - tekst kopiowany dla hooka (gdy poprzedni jeszcze nie
+                                // wyslany, nadpisujemy - liczy sie ostatnia komenda)
+                                strncpy(g_chat_text, cmd + 6, sizeof(g_chat_text) - 1);
+                                g_chat_text[sizeof(g_chat_text) - 1] = 0;
+                                InterlockedExchange(&g_want_chat, 1);
+                                dbg("native chat: '%s' (flaga dla hooka)", g_chat_text);
+                            } else if (strncmp(cmd, "!skill", 6) == 0) {
+                                g_skill_slot = atoi(cmd + 6);
+                                InterlockedExchange(&g_want_skill, 1);
+                                dbg("native skill: slot=%d (flaga dla hooka)", g_skill_slot);
                             } else if (strncmp(cmd, "!pick", 5) == 0) {
                                 InterlockedExchange(&g_want_pick, 1);
                                 dbg("native pick (flaga dla hooka)");
@@ -483,6 +673,46 @@ static DWORD WINAPI server_thread(LPVOID)
                                     }
                                 }
                                 dbg("native goto: (%.1f, %.1f) vcore=%d", gx, gy, (int)g_is_vcore);
+                            } else if (strncmp(cmd, "!tpick ", 7) == 0) {
+                                // "!tpick x y vid vid ..." - tylko GameCoreTop (RVA vCore nieznane)
+                                struct TPickArg *t = (struct TPickArg *)calloc(1, sizeof(struct TPickArg));
+                                char *p = cmd + 7, *e;
+                                if (t && !g_is_vcore && p_AddPendingCall) {
+                                    t->x = (float)strtod(p, &e); p = e;
+                                    t->y = (float)strtod(p, &e); p = e;
+                                    while (t->n < TPICK_MAX) {
+                                        unsigned long v = strtoul(p, &e, 10);
+                                        if (e == p)
+                                            break;
+                                        t->vids[t->n++] = (unsigned)v;
+                                        p = e;
+                                    }
+                                    p_AddPendingCall(pending_tpick, t);
+                                    dbg("native tpick: (%.1f, %.1f) vid x%d", t->x, t->y, t->n);
+                                } else {
+                                    free(t);
+                                    dbg("tpick: nieobslugiwane (vcore=%d)", (int)g_is_vcore);
+                                }
+                            } else if (strncmp(cmd, "!attack ", 8) == 0) {
+                                // "!attack <mot> <vid vid ...>" - masowy atak pakietem (GameCoreTop).
+                                // mot=0 cios zwykly. Natywny pending-call na glownym watku.
+                                struct TAttackArg *a = (struct TAttackArg *)calloc(1, sizeof(struct TAttackArg));
+                                char *p = cmd + 8, *e;
+                                if (a && !g_is_vcore && p_AddPendingCall) {
+                                    a->mot = (unsigned)strtoul(p, &e, 10); p = e;
+                                    while (a->n < ATTACK_MAX) {
+                                        unsigned long v = strtoul(p, &e, 10);
+                                        if (e == p)
+                                            break;
+                                        a->vids[a->n++] = (unsigned)v;
+                                        p = e;
+                                    }
+                                    p_AddPendingCall(pending_attack, a);
+                                    dbg("native attack: mot=%u vid x%d", a->mot, a->n);
+                                } else {
+                                    free(a);
+                                    dbg("attack: nieobslugiwane (vcore=%d)", (int)g_is_vcore);
+                                }
                             }
                         } else {
                             queue_script(cmd);          // Python (dziala tam, gdzie petla opruznia kolejke)
