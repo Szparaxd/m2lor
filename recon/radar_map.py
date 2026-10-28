@@ -395,6 +395,11 @@ AREA_ATK_SAFE_EVERY = 0.30  # s miedzy paczkami w trybie realistycznym (>0.1 s =
 AREA_ATK_MOT = 0          # uMotAttack=0 = cios zwykly (serwer liczy normalne obrazenia broni)
 AREA_ATK_MAX = 64         # tyle VID-ow na paczke (limit komendy DLL)
 AREA_ATK_KINDS = {"mob", "boss", "king", "special"}  # "potwory" (bez npc/gracza; metiny to kamienie)
+# Atak z PRZESKOKIEM pozycji (jak !tpick z lootu): dla mobow DALEJ niz serwerowy zasieg wrecz radar robi
+# skok pozycji do skupiska, bije je i wraca - lokalnie postac stoi. Dalekie moby gina bez podchodzenia.
+ATTACK_SRV_REACH = 300.0  # jedn.: serwerowy zasieg ataku wrecz (blizej - bij wprost, dalej - przez przeskok)
+ATTACK_TP_MAX = 2400.0    # jedn.: najdalszy skok (limit serwera "move too far" ~25 m, jak przy loot-tpick)
+ATTACK_HOP_EVERY = 0.35   # s: odstep miedzy skokami (jedno skupisko na krok, jak loot High)
 ENGAGE_REPLAN = 1.0       # s: trasa dojscia do celu liczona najwyzej co tyle...
 ENGAGE_REPLAN_MOVE = 200.0  # ...albo gdy cel przesunal sie o wiecej niz to
 OBST_MOB_MIN = 250.0      # moby blizej postaci nie sa przeszkoda (ruszaja sie / to one nas bija)
@@ -717,6 +722,10 @@ class RadarMap:
         self.area_atk_on = False
         self.area_atk_radius = AREA_ATK_RADIUS
         self.area_atk_mode = "safe"    # 'safe' = throttle + log zasiegu; 'aggro' = spam co petle
+        self.area_atk_hop = False      # przeskok pozycji do dalekich mobow (jak !tpick) - gina bez podchodzenia
+        self._area_hop_next = 0.0      # throttle skokow (ATTACK_HOP_EVERY)
+        self._tattack_ok = None        # czy wstrzyknieta DLL zna '!tattack' (cache)
+        self._tattack_t = 0.0
         self.area_atk_count = 0        # ile paczek ataku wyslano
         self.area_atk_gone = 0         # ile atakowanych mobow zniklo (przyblizone: smierc/odejscie)
         self._area_atk_last = 0.0      # kiedy ostatnio wyslano paczke (throttle)
@@ -792,6 +801,7 @@ class RadarMap:
         self.area_atk_var = tk.BooleanVar(value=self.area_atk_on)
         self.area_atk_r_var = tk.IntVar(value=int(self.area_atk_radius))
         self.area_atk_mode_var = tk.StringVar(value=self.area_atk_mode)
+        self.area_atk_hop_var = tk.BooleanVar(value=self.area_atk_hop)
         self.cape_var = tk.BooleanVar(value=self.cape_on)
         self.cape_period_var = tk.IntVar(value=int(self.cape_period))
         self.cape_mobs_var = tk.IntVar(value=int(self.cape_min_mobs))
@@ -885,6 +895,8 @@ class RadarMap:
                            command=self._on_area_atk_mode, bg="#0b0f0b", fg="#ff5ea8", selectcolor="#1b2a1b",
                            activebackground="#0b0f0b", activeforeground="#ffb0d4",
                            font=("Consolas", 9)).pack(side="left")
+        _chk("  Przeskok do dalekich (gina bez podchodzenia)", self.area_atk_hop_var,
+             self._on_area_atk_hop, "#ff5ea8", "#ffb0d4")
         # peleryna na farmie: co jakis czas uzyj, gdy w promieniu jest min. tyle potworow
         _chk("Peleryna co jakis czas (na farmie, przy mobach)", self.cape_var,
              self._on_cape_check, "#ffd24d", "#ffe9a6")
@@ -1303,6 +1315,9 @@ class RadarMap:
 
     def _on_area_atk_mode(self):
         self.area_atk_mode = self.area_atk_mode_var.get()
+
+    def _on_area_atk_hop(self):
+        self.area_atk_hop = bool(self.area_atk_hop_var.get())
 
     def _on_cape_check(self):
         self.cape_on = bool(self.cape_var.get())
@@ -3286,7 +3301,7 @@ class RadarMap:
         hx, hy = self._hero_world()
         if hx is None:
             return
-        targets = []                                        # (dystans, vid) mobow w promieniu
+        targets = []                                        # (dystans, vid, wx, wy) mobow w promieniu
         for x, y, vnum, is_pc, _o, vid in self._iter_actors(hx, hy):
             if not vid or is_pc:
                 continue
@@ -3294,9 +3309,9 @@ class RadarMap:
                 continue
             d = math.hypot(x - hx, y - hy)
             if d <= self.area_atk_radius:
-                targets.append((d, vid))
+                targets.append((d, vid, x, y))
         # test zasiegu: VID atakowany wczesniej, a teraz nieobecny = padl/odszedl. Zapamietaj najdalszy.
-        live = {v for _, v in targets}
+        live = {t[1] for t in targets}
         for v in self._area_atk_prev - live:
             d0 = self._area_atk_dist.pop(v, None)
             if d0 is not None:
@@ -3311,15 +3326,44 @@ class RadarMap:
             self._area_atk_last = now
             return
         targets.sort()
-        vids = [v for _, v in targets[:AREA_ATK_MAX]]
-        for d, v in targets:
+        for d, v, _x, _y in targets:
             self._area_atk_dist[v] = d                       # ostatni dystans ataku kazdego celu
-        if autopot.attack_vids(self.pm.process_id, vids, AREA_ATK_MOT):
-            self.area_atk_count += 1
-            self._area_atk_status = ("bije %d mob(ow) <=%.0f  [%s]  zniklo:%d  max skuteczny:%.0f"
-                                     % (len(vids), self.area_atk_radius,
-                                        "test" if self.area_atk_mode == "safe" else "spam",
-                                        self.area_atk_gone, self._area_atk_maxhit))
+        pid = self.pm.process_id
+        tryb = "test" if self.area_atk_mode == "safe" else "spam"
+        # PRZESKOK do dalekich: moby > ATTACK_SRV_REACH bij przez skok pozycji (jak !tpick) - gina bez
+        # podchodzenia; blizsze bij wprost. Bez przeskoku: wyslij do wszystkich (dalsze serwer odrzuci -
+        # aggruja i same podchodza).
+        hop = self.area_atk_hop
+        if hop and (self._tattack_ok is None or now - self._tattack_t > 10.0):
+            self._tattack_ok = autopot.has_tattack(pid)
+            self._tattack_t = now
+        if hop and not self._tattack_ok:
+            hop = False                                      # stara DLL bez !tattack - zachowaj sie zwyczajnie
+        if hop:
+            near = [v for d, v, _x, _y in targets if d <= ATTACK_SRV_REACH]
+            far = [(d, v, x, y) for d, v, x, y in targets if ATTACK_SRV_REACH < d <= ATTACK_TP_MAX]
+            if near:
+                autopot.attack_vids(pid, near[:AREA_ATK_MAX], AREA_ATK_MOT)
+            hopped = 0
+            hop_d = 0.0
+            if far and now - self._area_hop_next >= ATTACK_HOP_EVERY:
+                hd, _hv, cx, cy = far[0]                     # najblizsze skupisko na krok (jak loot High)
+                cluster = [v for d, v, x, y in far if math.hypot(x - cx, y - cy) <= ATTACK_SRV_REACH]
+                if autopot.tattack(pid, cx, cy, cluster[:AREA_ATK_MAX], AREA_ATK_MOT):
+                    self.area_atk_count += 1
+                    hopped, hop_d = len(cluster), hd
+                    self._area_hop_next = now
+            if near or hopped:
+                self._area_atk_status = (
+                    "bij %d wrecz + przeskok %d@d%.0f  <=%.0f [%s]  zniklo:%d"
+                    % (len(near), hopped, hop_d, self.area_atk_radius, tryb, self.area_atk_gone))
+        else:
+            vids = [v for _d, v, _x, _y in targets[:AREA_ATK_MAX]]
+            if autopot.attack_vids(pid, vids, AREA_ATK_MOT):
+                self.area_atk_count += 1
+                self._area_atk_status = ("bije %d mob(ow) <=%.0f  [%s]  zniklo:%d  max skuteczny:%.0f"
+                                         % (len(vids), self.area_atk_radius, tryb,
+                                            self.area_atk_gone, self._area_atk_maxhit))
         self._area_atk_last = now
 
     def _cape_step(self):

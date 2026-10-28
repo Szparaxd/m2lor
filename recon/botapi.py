@@ -52,6 +52,7 @@ OPTIONS = {
     "area_atk":      (bool,  "area_atk_on",     "area_atk_var",      "_on_area_atk_check",  None),
     "area_atk_radius": (int, "area_atk_radius", "area_atk_r_var",    "_on_area_atk_radius", (300, 8000)),
     "area_atk_mode": (str,   "area_atk_mode",   "area_atk_mode_var", "_on_area_atk_mode",   None),
+    "area_atk_hop":  (bool,  "area_atk_hop",    "area_atk_hop_var",  "_on_area_atk_hop",    None),
     "prep_dismount": (bool,  "prep_dismount", "prep_dismount_var", "_on_prep_opts",      None),
     "prep_buffs":    (bool,  "prep_buffs",    "prep_buffs_var",    "_on_prep_opts",      None),
     "prep_remount":  (bool,  "prep_remount",  "prep_remount_var",  "_on_prep_opts",      None),

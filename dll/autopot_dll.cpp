@@ -183,6 +183,13 @@ struct TPickArg { float x, y; int n; unsigned vids[TPICK_MAX]; };
 typedef bool(__thiscall *PFN_SENDATTACK)(void *self, unsigned motAttack, unsigned vid);
 struct TAttackArg { unsigned mot; int n; unsigned vids[ATTACK_MAX]; };
 
+// Atak z PRZESKOKIEM pozycji (GameCoreTop): jak !tpick, ale zamiast podnoszenia - ataki. W jednej klatce
+// glownego watku: ruch FUNC_WAIT na (x,y) -> SendAttackPacket dla kazdego VID (serwer liczy zasieg ataku
+// od (x,y), wiec dalekie moby mozna uderzyc) -> ruch FUNC_WAIT z powrotem. Lokalna postac stoi. "!tattack
+// x y mot vid...". Serwer moze walidowac dystans ruchu (anti-speedhack) - to swiadomy eksperyment.
+#define ATTACKHOP_MAX              64
+struct TAttackHopArg { float x, y; unsigned mot; int n; unsigned vids[ATTACKHOP_MAX]; };
+
 typedef void(__thiscall *PFN_RULQS)(void *self, unsigned idx);
 typedef void(__thiscall *PFN_PICK)(void *self);     // PickCloseItem - bez argumentow
 typedef void(__thiscall *PFN_CLICKSKILL)(void *self, unsigned slot);  // ClickSkillSlot - jak klik w okno umiejetnosci
@@ -302,6 +309,31 @@ static int __cdecl pending_attack(void *arg)
         dbg("attack: brak sieci (net=NULL)");
     }
     free(a);
+    return 0;
+}
+
+// Przeskok-atak-powrot (patrz TAttackHopArg). TYLKO glowny watek (bufor pakietow bez blokad).
+static int __cdecl pending_tattack(void *arg)
+{
+    struct TAttackHopArg *t = (struct TAttackHopArg *)arg;
+    void *self = get_main_char();
+    void *net = *(void **)(g_base + GC_NETSTREAM_RVA);
+    if (self && net) {
+        float cur[3] = {0, 0, 0};
+        ((PFN_GETPOS)(g_base + GC_GETPOS_RVA))(self, cur);
+        float dst[3] = {t->x, t->y, cur[2]};
+        PFN_SENDSTATE st = (PFN_SENDSTATE)(g_base + GC_SENDSTATE_RVA);
+        PFN_SENDATTACK atk = (PFN_SENDATTACK)(g_base + GC_SENDATTACK_RVA);
+        st(net, dst, 0.0f, FUNC_WAIT_STATE, 0);              // "jestem" przy skupisku
+        for (int i = 0; i < t->n; ++i)
+            atk(net, t->mot, t->vids[i]);
+        st(net, cur, 0.0f, FUNC_WAIT_STATE, 0);              // powrot na realna pozycje
+        dbg("tattack: (%.0f,%.0f) -> (%.0f,%.0f) mot=%u vid x%d -> powrot",
+            cur[0], cur[1], t->x, t->y, t->mot, t->n);
+    } else {
+        dbg("tattack: brak postaci/sieci (self=%p net=%p)", self, net);
+    }
+    free(t);
     return 0;
 }
 
@@ -591,7 +623,7 @@ static DWORD WINAPI server_thread(LPVOID)
         _snprintf(mk, sizeof(mk), "C:\\Metin\\radar-project\\logs\\caps_%lu.ok", GetCurrentProcessId());
         FILE *f = fopen(mk, "w");
         if (f) {
-            fputs("tpick attack", f);
+            fputs("tpick attack tattack", f);
             fclose(f);
         }
     }
@@ -712,6 +744,27 @@ static DWORD WINAPI server_thread(LPVOID)
                                 } else {
                                     free(a);
                                     dbg("attack: nieobslugiwane (vcore=%d)", (int)g_is_vcore);
+                                }
+                            } else if (strncmp(cmd, "!tattack ", 9) == 0) {
+                                // "!tattack x y mot vid vid ..." - przeskok-atak-powrot (tylko GameCoreTop)
+                                struct TAttackHopArg *t = (struct TAttackHopArg *)calloc(1, sizeof(struct TAttackHopArg));
+                                char *p = cmd + 9, *e;
+                                if (t && !g_is_vcore && p_AddPendingCall) {
+                                    t->x = (float)strtod(p, &e); p = e;
+                                    t->y = (float)strtod(p, &e); p = e;
+                                    t->mot = (unsigned)strtoul(p, &e, 10); p = e;
+                                    while (t->n < ATTACKHOP_MAX) {
+                                        unsigned long v = strtoul(p, &e, 10);
+                                        if (e == p)
+                                            break;
+                                        t->vids[t->n++] = (unsigned)v;
+                                        p = e;
+                                    }
+                                    p_AddPendingCall(pending_tattack, t);
+                                    dbg("native tattack: (%.1f, %.1f) mot=%u vid x%d", t->x, t->y, t->mot, t->n);
+                                } else {
+                                    free(t);
+                                    dbg("tattack: nieobslugiwane (vcore=%d)", (int)g_is_vcore);
                                 }
                             }
                         } else {

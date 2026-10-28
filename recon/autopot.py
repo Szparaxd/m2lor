@@ -448,6 +448,26 @@ def has_attack(pid):
         return False
 
 
+def has_tattack(pid):
+    """True, gdy wstrzyknieta DLL zna '!tattack' (atak z przeskokiem pozycji; znacznik caps_<pid>.ok)."""
+    try:
+        with open(os.path.join(os.path.dirname(INV_DUMP_PATH), "caps_%d.ok" % pid)) as fh:
+            return "tattack" in fh.read()
+    except OSError:
+        return False
+
+
+def tattack(pid, wx, wy, vids, mot=0):
+    """GameCoreTop: 'przeskok-atak-powrot' - DLL w jednej klatce wysyla serwerowi ruch na (wx,wy),
+    pakiety ataku dla vids i ruch z powrotem. Lokalnie postac STOI. Serwer liczy zasieg ataku od (wx,wy),
+    wiec dalekie moby mozna uderzyc bez podchodzenia (jak !tpick dla lootu). vids obcinane do 64.
+    True gdy komenda dotarla do DLL."""
+    if not vids:
+        return False
+    return send_command(pid, "!tattack %.0f %.0f %d %s" % (wx, wy, int(mot),
+                        " ".join(str(int(v)) for v in vids[:64])))
+
+
 def attack_vids(pid, vids, mot=0):
     """GameCoreTop: wyslij pakiet ataku do KAZDEGO VID (CPythonNetworkStream::SendAttackPacket).
     Bije moby BEZ lokalnej animacji i BEZ ruchu postaci - omija sciezke wejscia OnHit. mot=0 = cios
