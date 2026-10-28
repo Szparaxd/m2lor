@@ -22,6 +22,11 @@ API (JSON):
   POST /api/clients/<pid>/relog             wyloguj postac - autologowanie wejdzie od nowa (np. na inny CH)
   POST /api/autologin/<id>/launch           uruchom klienta dla profilu (bez klienta) i zaloguj
   POST /api/autologin/<id>/remove           usun profil
+  GET  /api/settings                        ustawienia panelu (sciezka gry, okno radaru) + czy hub ma admina
+  POST /api/settings                        {"game_path"?, "radar_window"?}
+  GET  /api/files/<nazwa>                   pliki konfiguracji bota z data/ (FILES) - tekst
+  POST /api/files/<nazwa>                   {"text"} zapis (radar czyta je na zywo)
+  GET  /api/logs                            lista logow; GET /api/logs/<plik> = ostatnie LOG_TAIL bajtow
 Bezpieczenstwo: tylko 127.0.0.1, sprawdzany Host (DNS rebinding) i Origin przy POST (inne strony
 z przegladarki nie moga sterowac botem).
 """
@@ -43,6 +48,7 @@ from urllib.parse import unquote, urlparse
 import autologin
 import botapi
 import clients
+import settings
 
 RECON_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.normpath(os.path.join(RECON_DIR, ".."))
@@ -53,6 +59,16 @@ LOGS_DIR = os.path.join(ROOT_DIR, "logs")
 DEFAULT_PORT = 8765
 WORKER_TIMEOUT = 1.5       # s: snapshot z radaru (wolny radar nie blokuje calej listy)
 START_GRACE = 60.0         # s: tyle pokazujemy "radar startuje" po kliknieciu (kalibracja trwa kilka s)
+DATA_DIR = os.path.join(ROOT_DIR, "data")
+# pliki konfiguracji edytowalne w panelu (radar czyta je na zywo): nazwa -> opis
+FILES = {
+    "potion_vnums.txt": "Dodatkowe vnum mikstur do picia z ekwipunku",
+    "cape_vnums.txt": "Vnum peleryn używanych na farmie",
+    "radar_mobs.txt": "Własne kategorie potworów (boss, specjalny) na radarze",
+}
+FILE_MAX = 256 * 1024
+LOG_PREFIXES = ("radar_", "launch_", "hub", "autologin_", "dll_debug")
+LOG_TAIL = 64 * 1024
 
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 u32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -177,8 +193,10 @@ class Hub:
         os.makedirs(LOGS_DIR, exist_ok=True)
         log = open(os.path.join(LOGS_DIR, "radar_%d.txt" % pid), "w", encoding="utf-8")
         # odlaczony od huba: zamkniecie huba nie zamyka radarow
-        subprocess.Popen([sys.executable, "-u", os.path.join(RECON_DIR, "radar_map.py"), "-e", exe, "-p", str(pid)],
-                         cwd=RECON_DIR, stdout=log, stderr=subprocess.STDOUT,
+        # bez okna tk (wszystko w panelu), chyba ze w Ustawieniach wlaczono stary widok radaru
+        extra = [] if settings.load()["radar_window"] else ["--headless"]
+        subprocess.Popen([sys.executable, "-u", os.path.join(RECON_DIR, "radar_map.py"), "-e", exe, "-p", str(pid)]
+                         + extra, cwd=RECON_DIR, stdout=log, stderr=subprocess.STDOUT,
                          creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS)
         self._starting[pid] = time.time()
         return 200, {"ok": True}
@@ -202,10 +220,76 @@ class Hub:
     def launch(self):
         os.makedirs(LOGS_DIR, exist_ok=True)
         log = open(os.path.join(LOGS_DIR, "launch_%s.txt" % time.strftime("%Y%m%d_%H%M%S")), "w", encoding="utf-8")
-        subprocess.Popen([sys.executable, "-u", os.path.join(RECON_DIR, "launch.py"), "--new"],
+        cfg = settings.load()
+        if not os.path.isfile(cfg["game_path"]):
+            raise ValueError("nie ma pliku gry %s - popraw sciezke w Ustawieniach" % cfg["game_path"])
+        args = ["--new", "-e", os.path.basename(cfg["game_path"]), "--game", cfg["game_path"]]
+        if not cfg["radar_window"]:
+            args.append("--headless")
+        subprocess.Popen([sys.executable, "-u", os.path.join(RECON_DIR, "launch.py")] + args,
                          cwd=RECON_DIR, stdout=log, stderr=subprocess.STDOUT,
                          creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS)
         return 200, {"ok": True}
+
+
+def is_admin():
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except OSError:
+        return False
+
+
+def settings_view():
+    cfg = settings.load()
+    return dict(cfg, admin=is_admin(), game_found=os.path.isfile(cfg["game_path"]))
+
+
+def read_file(name):
+    if name not in FILES:
+        raise LookupError("nie ma pliku %s" % name)
+    try:
+        with open(os.path.join(DATA_DIR, name), encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        text = ""
+    return {"name": name, "about": FILES[name], "text": text}
+
+
+def write_file(name, text):
+    if name not in FILES:
+        raise LookupError("nie ma pliku %s" % name)
+    if not isinstance(text, str) or len(text.encode("utf-8")) > FILE_MAX:
+        raise ValueError("zly albo za duzy tekst")
+    path = os.path.join(DATA_DIR, name)
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(path + ".tmp", path)         # radar nigdy nie czyta pliku w polowie zapisu
+    return {"ok": True}
+
+
+def list_logs():
+    out = []
+    for n in os.listdir(LOGS_DIR) if os.path.isdir(LOGS_DIR) else []:
+        p = os.path.join(LOGS_DIR, n)
+        if n.startswith(LOG_PREFIXES) and n.endswith(".txt") and os.path.isfile(p):
+            st = os.stat(p)
+            out.append({"name": n, "size": st.st_size, "mtime": st.st_mtime})
+    return sorted(out, key=lambda e: -e["mtime"])
+
+
+def read_log(name):
+    if os.path.basename(name) != name or not name.startswith(LOG_PREFIXES) or not name.endswith(".txt"):
+        raise LookupError("nie ma logu %s" % name)
+    path = os.path.join(LOGS_DIR, name)
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - LOG_TAIL))
+            data = f.read()
+    except FileNotFoundError:
+        raise LookupError("nie ma logu %s" % name)
+    return {"name": name, "size": size, "truncated": size > LOG_TAIL, "text": data.decode("utf-8", "replace")}
 
 
 def make_handler(hub, port):
@@ -264,6 +348,22 @@ def make_handler(hub, port):
                 self._send(200, {"profiles": hub.autologin.profiles(), "channels": list(autologin.CHANNELS)})
             elif p == "/api/clients":
                 self._send(200, {"clients": hub.list(), "t": time.time()})
+            elif p == "/api/settings":
+                self._send(200, settings_view())
+            elif p == "/api/files":
+                self._send(200, {"files": [{"name": n, "about": a} for n, a in FILES.items()]})
+            elif p.startswith("/api/files/"):
+                try:
+                    self._send(200, read_file(p[len("/api/files/"):]))
+                except LookupError as e:
+                    self._send(404, {"error": str(e)})
+            elif p == "/api/logs":
+                self._send(200, {"logs": list_logs()})
+            elif p.startswith("/api/logs/"):
+                try:
+                    self._send(200, read_log(p[len("/api/logs/"):]))
+                except LookupError as e:
+                    self._send(404, {"error": str(e)})
             elif p.startswith("/api/clients/") and p.endswith("/snapshot"):
                 try:
                     code, res = hub.snapshot(int(p.split("/")[3]))
@@ -288,6 +388,11 @@ def make_handler(hub, port):
                 body = json.loads(self.rfile.read(n) or b"{}")
                 if parts == ["api", "launch"]:
                     code, res = hub.launch()
+                elif parts == ["api", "settings"]:
+                    settings.save(body)
+                    code, res = 200, dict(settings_view(), ok=True)
+                elif len(parts) == 3 and parts[:2] == ["api", "files"]:
+                    code, res = 200, write_file(parts[2], body.get("text"))
                 elif len(parts) == 4 and parts[:2] == ["api", "autologin"]:
                     if parts[3] == "launch":
                         code, res = 200, hub.autologin.launch(parts[2])
@@ -328,12 +433,21 @@ def make_handler(hub, port):
 def main():
     ap = argparse.ArgumentParser(description="Panel WWW dla wszystkich klientow gry.")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
+    ap.add_argument("--open", action="store_true", help="otworz panel w domyslnej przegladarce")
+    ap.add_argument("--no-autologin", action="store_true",
+                    help="bez petli autologowania (np. drugi hub do testow obok dzialajacego)")
     args = ap.parse_args()
     hub = Hub()
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(hub, args.port))
     srv.daemon_threads = True
-    hub.autologin.start()
+    if not args.no_autologin:
+        hub.autologin.start()
     print("[hub] panel: http://127.0.0.1:%d  (Ctrl+C konczy; radary dzialaja dalej)" % args.port)
+    if not is_admin():
+        print("[hub] UWAGA: bez uprawnien administratora radar nie wstrzyknie DLL - uruchom panel.bat")
+    if args.open:
+        import webbrowser
+        webbrowser.open("http://127.0.0.1:%d/" % args.port)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

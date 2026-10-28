@@ -14,6 +14,7 @@ data/workers/<pid>.json (hub znajduje po nim workery; plik znika przy wyjsciu ra
   POST /api/shutdown                    zamknij radar (jak krzyzyk okna)
   trasa: name = waypoint_add {"x","y"} / waypoint_undo / waypoint_clear  (jak Ctrl+klik / klawisz C)
   podazanie: name = follow, value {"leader": "Nick", "distance": N} albo {"leader": null}
+  akcje jak klawisze radaru: name = action, value reinject (J) / calibrate (K) / rescan (R) / rebuild_map (M)
 Recznie:  curl -H "X-Bot-Token: <token>" http://127.0.0.1:<port>/api/snapshot
 """
 import atexit
@@ -43,6 +44,7 @@ OPTIONS = {
     "autoloot":      (bool,  "autoloot_on",   "autoloot_var",      "_on_autoloot_check", None),
     "loot_interval": (float, "loot_interval", "loot_var",          "_on_loot_cd",        (0.2, 2.0)),
     "loot_radius":   (int,   "loot_radius",   "loot_radius_var",   "_on_loot_radius",    (300, 4000)),
+    "loot_mode":     (str,   "loot_mode",     "loot_mode_var",     "_on_loot_mode",      None),
     "autowalk":      (bool,  "autowalk_on",   "autowalk_var",      "_on_autowalk_check", None),
     "walk_fight":    (bool,  "walk_fight",    "walkfight_var",     "_on_walkfight",      None),
     "farm":          (bool,  "farm_on",       "farm_var",          "_on_farm_check",     None),
@@ -56,13 +58,21 @@ OPTIONS = {
     "prep_dismount": (bool,  "prep_dismount", "prep_dismount_var", "_on_prep_opts",      None),
     "prep_buffs":    (bool,  "prep_buffs",    "prep_buffs_var",    "_on_prep_opts",      None),
     "prep_remount":  (bool,  "prep_remount",  "prep_remount_var",  "_on_prep_opts",      None),
+    "cape":          (bool,  "cape_on",       "cape_var",          "_on_cape_check",     None),
+    "cape_period":   (int,   "cape_period",   "cape_period_var",   "_on_cape_period",    (10, 600)),
+    "cape_min_mobs": (int,   "cape_min_mobs", "cape_mobs_var",     "_on_cape_mobs",      (1, 30)),
     "speed":         (bool,  "speed_on",      "speed_var",         "_on_speed_check",    None),
     "move_mult":     (float, "move_mult",     "movx_var",          "_on_movx",           (1.0, 3.0)),
     "atk_mult":      (float, "atk_mult",      "atkx_var",          "_on_atkx",           (1.0, 3.0)),
     "autobuff":      (bool,  "autobuff.on",   "autobuff_var",      "_on_autobuff_check", None),
 }
 _SLIDER_HANDLERS = {"_on_low", "_on_high", "_on_cd", "_on_loot_cd", "_on_loot_radius", "_on_farmr", "_on_movx",
-                    "_on_atkx", "_on_area_atk_radius"}
+                    "_on_atkx", "_on_area_atk_radius", "_on_cape_period", "_on_cape_mobs"}
+# opcje tekstowe = przelaczniki radiowe w panelu tk: dozwolone wartosci
+CHOICES = {"loot_mode": ("human", "instant", "high"), "area_atk_mode": ("safe", "aggro")}
+# akcje jednorazowe (klawisze radaru); dluzszy limit - wstrzykniecie DLL / kalibracja trwaja kilka sekund
+ACTIONS = ("reinject", "calibrate", "rescan", "rebuild_map")
+ACTION_TIMEOUT = 30.0
 
 
 def _get(obj, dotted):
@@ -90,6 +100,8 @@ class BotApi:
             d = {"value": v, "type": typ.__name__}
             if rng:
                 d["min"], d["max"] = rng
+            if name in CHOICES:
+                d["choices"] = list(CHOICES[name])
             out[name] = d
         if hasattr(self.r, "pot_size_vars") and hasattr(self.r, "pot_sizes"):   # rozmiary mikstur (lista)
             out["pot_sizes"] = {"value": sorted(self.r.pot_sizes), "type": "list",
@@ -125,6 +137,16 @@ class BotApi:
                 "combat": getattr(r, "_combat_status", ""),
                 "buff": getattr(getattr(r, "autobuff", None), "status", ""),
                 "waypoints": len(getattr(r, "path", []) or []),
+                "metins": len(getattr(r, "metins", []) or []),
+                "pot_mode": "bez fokusu" if (getattr(r, "dll_exec", False) or getattr(r, "native_drink", False))
+                            else "wymaga fokusu",
+                "pot_vnums": list(getattr(r, "pot_vnums", []) or []),
+                "area_atk": getattr(r, "_area_atk_status", ""),
+                "area_atk_count": getattr(r, "area_atk_count", 0),
+                "cape": getattr(r, "_cape_status", ""),
+                "cape_count": getattr(r, "cape_count", 0),
+                "buff_count": getattr(getattr(r, "autobuff", None), "count", 0),
+                "mount": self._mount(),
             },
             "follow": self.follower.status() if self.follower else None,
         }
@@ -132,6 +154,10 @@ class BotApi:
             snap["entities"] = self.entities(hx, hy)
             snap["overlay"] = self.overlay()
         return snap
+
+    def _mount(self):
+        m = getattr(self.r, "mounted", None)
+        return None if m is None else {"on": bool(m[0]), "model": m[1] if m[0] else None}
 
     def overlay(self):
         """Co radar rysuje poza encjami: waypointy, biezaca trasa A*, okrag farmy, cel walki."""
@@ -148,18 +174,28 @@ class BotApi:
             "farm": {"x": round(fc[0]), "y": round(fc[1]), "r": round(r.farm_radius)}
                     if getattr(r, "farm_on", False) and fc else None,
             "target": {"x": round(tgt[0]), "y": round(tgt[1]), "melee": bool(tgt[2])} if tgt else None,
+            "ground": [[round(g[2]), round(g[3])] for g in list(getattr(r, "ground", []) or [])],
+            "learned": [[round(x), round(y)] for x, y, *_ in list(getattr(r, "_learned", []) or [])],
+            "area_r": round(r.area_atk_radius) if getattr(r, "area_atk_on", False) else None,
         }
 
     def entities(self, hx, hy, radius=ENTITY_R):
         """[{x, y, kind, vnum, vid}] aktorow (bez wlasnej postaci) + metiny z efektow, w promieniu."""
         r, out = self.r, []
-        for x, y, vnum, is_pc, _o, vid in r._iter_actors(hx, hy):
+        for x, y, vnum, is_pc, o, vid in r._iter_actors(hx, hy):
             if math.hypot(x - hx, y - hy) <= radius:
-                out.append({"x": round(x), "y": round(y), "kind": r._classify(vnum, is_pc),
-                            "vnum": vnum, "vid": vid})
-        for mx, my, _name in list(r.metins):
+                kind = r._classify(vnum, is_pc)
+                e = {"x": round(x), "y": round(y), "kind": kind, "vnum": vnum, "vid": vid}
+                if kind != "mob":                    # nazwy tylko dla rzadkich (odczyt pamieci per encja)
+                    try:
+                        e["name"] = r._mob_name(o) or None
+                    except Exception:
+                        pass
+                out.append(e)
+        for mx, my, name in list(r.metins):
             if math.hypot(mx - hx, my - hy) <= radius:
-                out.append({"x": round(mx), "y": round(my), "kind": "metin", "vnum": 0, "vid": 0})
+                out.append({"x": round(mx), "y": round(my), "kind": "metin", "vnum": 0, "vid": 0,
+                            "name": name if isinstance(name, str) else None})
         return out
 
     # ---------- zapis (wykonywany w watku GUI, wolajacy czeka na wynik) ----------
@@ -173,6 +209,9 @@ class BotApi:
             fn = self._waypoint_fn(name, value)
         elif name == "follow":
             fn = self._follow_fn(value)
+        elif name == "action":
+            fn = self._action_fn(value)
+            timeout = max(timeout, ACTION_TIMEOUT)
         elif name in OPTIONS:
             fn = self._option_fn(name, value)
         else:
@@ -202,6 +241,10 @@ class BotApi:
             if not isinstance(value, bool):
                 raise ValueError("%s: oczekuje true/false" % name)
             v = value
+        elif typ is str:
+            if value not in CHOICES.get(name, ()):
+                raise ValueError("%s: oczekuje jednej z %s" % (name, list(CHOICES.get(name, ()))))
+            v = value
         else:
             try:
                 v = typ(value)
@@ -214,6 +257,24 @@ class BotApi:
         def fn():
             tkvar.set(v)
             h(v) if handler in _SLIDER_HANDLERS else h()
+        return fn
+
+    def _action_fn(self, value):
+        """Jednorazowe akcje radaru - te same, co klawisze J/K/R/M w oknie tk."""
+        if value not in ACTIONS:
+            raise ValueError("action: oczekuje jednej z %s" % list(ACTIONS))
+        r = self.r
+
+        def fn():
+            if value == "reinject":
+                r.dll_status = r._inject_dll()
+            elif value == "calibrate":
+                r.calibrate()
+            elif value == "rescan":
+                r.rescan()
+            else:
+                ma = sys.modules[type(r).__module__].map_assets
+                r._set_map(ma.build_map_image(r.map.name, use_cache=False))
         return fn
 
     def _buff_fn(self, value):

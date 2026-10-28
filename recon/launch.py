@@ -27,12 +27,13 @@ import pymem.process
 
 import clients
 import rtti
+import settings
 
 HERO_CLASS = "CGameEventManager"   # pozycja gracza: X@+0x8 ; worldY = -(+0xC) (jak w radar_map)
 HERO_POS = 0x8
 WORLD_MIN, WORLD_MAX = 1.0, 10_000_000.0
 DEFAULT_EXE = "GameCoreTop.exe"
-DEFAULT_GAME = r"C:\Metin\Terenzo 2024 - Muchomor Upgrade\GameCore\Klient Terenzo 2024\GameCoreTop.exe"
+DEFAULT_GAME = settings.game_path()      # zmieniana w panelu WWW (Ustawienia) -> data/panel.json
 POLL_SEC = 2.0
 TIMEOUT_SEC = 600          # ile maks. czekamy na wejscie w swiat (10 min)
 
@@ -102,6 +103,7 @@ def main():
     ap.add_argument("--game", default=DEFAULT_GAME, help="pelna sciezka do exe gry")
     ap.add_argument("--new", action="store_true", help="uruchom KOLEJNEGO klienta, nawet gdy jakis dziala")
     ap.add_argument("-p", "--pid", type=int, default=None, help="podlacz radar do dzialajacego klienta o PID")
+    ap.add_argument("--headless", action="store_true", help="radar bez okna (sterowanie z panelu WWW)")
     args = ap.parse_args()
     exe = args.exe if args.exe.lower().endswith(".exe") else args.exe + ".exe"
 
@@ -145,7 +147,8 @@ def main():
     # 3) odpal radar (sam wstrzyknie DLL i skalibruje offsety)
     radar = os.path.join(recon_dir, "radar_map.py")
     print("[launch] start: %s -e %s -p %d" % (radar, exe, pid))
-    subprocess.Popen([sys.executable, radar, "-e", exe, "-p", str(pid)], cwd=recon_dir)
+    subprocess.Popen([sys.executable, radar, "-e", exe, "-p", str(pid)] + (["--headless"] if args.headless else []),
+                     cwd=recon_dir)
     print("[launch] gotowe - radar wystartowal.")
     return 0
 

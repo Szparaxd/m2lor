@@ -3,122 +3,207 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Postacie – panel bota</title>
+  <title>Panel bota</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Marcellus&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <p class="notice" id="notice" role="status" hidden></p>
-
-  <!-- widok 1: lista postaci -->
-  <section id="view-list">
-    <header class="top">
-      <div>
-        <h1>Postacie</h1>
-        <p class="summary" id="summary">Łączę z hubem…</p>
-      </div>
-      <button class="btn btn-gold" id="launch" type="button">Uruchom nowego klienta</button>
-    </header>
-    <main id="roster" class="roster" aria-live="polite"></main>
-    <section id="accounts" class="accounts" hidden>
-      <h2>Konta bez klienta</h2>
-      <ul class="account-list"></ul>
-    </section>
-  </section>
-
-  <!-- widok 2: jedna postać (radar + wszystkie opcje) -->
-  <section id="view-detail" class="detail" hidden>
-    <a class="back" href="#/">Wszystkie postacie</a>
-    <header class="detail-head">
-      <div class="portrait"><img alt=""></div>
-      <div class="who">
-        <h1 class="nick"></h1>
-        <p class="meta"></p>
-        <div class="bars">
-          <div class="bar bar-hp"><span class="fill"></span><span class="num"></span></div>
-          <div class="bar bar-sp"><span class="fill"></span><span class="num"></span></div>
-        </div>
-      </div>
-      <div class="actions">
-        <button class="btn btn-quiet act-window" type="button"></button>
-        <button class="btn act-radar" type="button"></button>
-      </div>
-    </header>
-    <div class="detail-body">
-      <figure class="radar">
-        <canvas id="radar-canvas" aria-label="Radar: mapa z postacią na środku"></canvas>
-        <figcaption class="radar-bar">
-          <ul class="legend">
-            <li><i class="k-mob"></i>potwór</li>
-            <li><i class="k-boss"></i>boss</li>
-            <li><i class="k-special"></i>specjalny</li>
-            <li><i class="k-metin"></i>metin</li>
-            <li><i class="k-player"></i>gracz</li>
-            <li><i class="k-npc"></i>NPC</li>
-          </ul>
-          <div class="zoom">
-            <button class="btn btn-quiet" id="zoom-out" type="button" aria-label="Oddal">−</button>
-            <button class="btn btn-quiet" id="zoom-in" type="button" aria-label="Przybliż">+</button>
-          </div>
-        </figcaption>
-        <div class="route-tools" role="group" aria-label="Trasa auto-chodzenia">
-          <button class="btn btn-quiet" id="route-edit" type="button" aria-pressed="false">Dodawaj punkty trasy</button>
-          <button class="btn btn-quiet" id="route-undo" type="button">Cofnij punkt</button>
-          <button class="btn btn-quiet" id="route-clear" type="button">Wyczyść trasę</button>
-        </div>
-        <p class="radar-status" id="radar-status"></p>
-      </figure>
-      <section class="controls">
-        <div class="tabs" role="tablist" aria-label="Funkcje bota"></div>
-        <div class="tabpanel" role="tabpanel"></div>
-      </section>
+<div class="app">
+  <!-- lewa szyna: nawigacja + postacie (jak lewa kolumna m2bob) -->
+  <aside class="rail">
+    <a class="brand" href="#/">
+      <span class="brand-name">m2lor</span>
+      <span class="brand-sub">panel bota</span>
+    </a>
+    <nav class="nav" aria-label="Sekcje panelu">
+      <a href="#/" data-view="list">Postacie</a>
+      <a href="#/konta" data-view="accounts">Konta i logowanie</a>
+      <a href="#/ustawienia" data-view="settings">Ustawienia</a>
+      <a href="#/dziennik" data-view="logs">Dziennik</a>
+    </nav>
+    <div class="rail-roster">
+      <p class="rail-title">W grze</p>
+      <ul id="rail-list" class="rail-list"></ul>
     </div>
-  </section>
+    <p class="rail-foot" id="hub-state">Łączę z hubem…</p>
+  </aside>
 
-  <template id="tpl-plaque">
-    <article class="plaque">
-      <div class="portrait"><img alt=""></div>
-      <div class="who">
-        <h2 class="nick"><a class="open"></a></h2>
-        <p class="meta"></p>
-        <div class="bars">
-          <div class="bar bar-hp"><span class="fill"></span><span class="num"></span></div>
-          <div class="bar bar-sp"><span class="fill"></span><span class="num"></span></div>
+  <main class="stage">
+    <p class="notice" id="notice" role="status" hidden></p>
+
+    <!-- Postacie: wszystkie klienty gry -->
+    <section id="view-list" class="view">
+      <header class="view-head">
+        <div>
+          <h1>Postacie</h1>
+          <p class="summary" id="summary">Łączę z hubem…</p>
         </div>
-      </div>
-      <div class="switches" role="group" aria-label="Funkcje bota"></div>
-      <div class="actions">
-        <button class="btn btn-quiet act-window" type="button"></button>
-        <button class="btn act-radar" type="button"></button>
-      </div>
-      <details class="autologin">
-        <summary>Autologowanie <span class="al-state"></span></summary>
-        <form class="al-form" autocomplete="off">
-          <label>Login <input name="login" required spellcheck="false"></label>
-          <label>Hasło <input name="password" type="password" autocomplete="new-password"></label>
-          <label>Kanał
-            <select name="channel"><option value="1">CH1</option><option value="2">CH2</option><option value="3">CH3</option><option value="4">CH4</option></select>
-          </label>
-          <label>Postać
-            <select name="slot"><option value="0">1</option><option value="1">2</option><option value="2">3</option><option value="3">4</option></select>
-          </label>
-          <div class="al-checks">
-            <label class="check"><input type="checkbox" name="enabled" checked> Włączone</label>
-            <label class="check"><input type="checkbox" name="restart"> Uruchom klienta ponownie, gdy się zamknie</label>
-            <label class="check"><input type="checkbox" name="radar"> Po wejściu do gry uruchom radar</label>
-          </div>
-          <div class="al-buttons">
-            <button class="btn btn-gold" type="submit">Zapisz</button>
-            <button class="btn btn-quiet al-relog" type="button">Przeloguj teraz</button>
-          </div>
-        </form>
-      </details>
-      <p class="foot"></p>
-    </article>
-  </template>
+        <button class="btn btn-gold" id="launch" type="button">Uruchom nowego klienta</button>
+      </header>
+      <div id="roster" class="roster" aria-live="polite"></div>
+    </section>
 
-  <script src="/static/app.js"></script>
+    <!-- Jedna postać: radar + wszystkie funkcje -->
+    <section id="view-detail" class="view detail" hidden>
+      <header class="detail-head">
+        <div class="portrait"><img alt=""></div>
+        <div class="who">
+          <h1 class="nick"></h1>
+          <p class="meta"></p>
+          <div class="bars">
+            <div class="bar bar-hp"><span class="fill"></span><span class="num"></span></div>
+            <div class="bar bar-sp"><span class="fill"></span><span class="num"></span></div>
+          </div>
+        </div>
+        <ul class="chips-state" id="state-chips"></ul>
+        <div class="actions">
+          <button class="btn btn-quiet act-window" type="button"></button>
+          <button class="btn act-radar" type="button"></button>
+          <details class="menu" id="tools">
+            <summary class="btn btn-quiet">Narzędzia</summary>
+            <div class="menu-list" role="menu">
+              <button type="button" role="menuitem" data-action="reinject">Wstrzyknij DLL ponownie<small>gdy picie lub loot przestały działać</small></button>
+              <button type="button" role="menuitem" data-action="calibrate">Kalibruj offsety<small>po zmianie mapy albo złej pozycji</small></button>
+              <button type="button" role="menuitem" data-action="rescan">Skanuj potwory teraz<small>bez czekania na skan w tle</small></button>
+              <button type="button" role="menuitem" data-action="rebuild_map">Zbuduj mapę od nowa<small>gdy tło radaru jest złe</small></button>
+            </div>
+          </details>
+        </div>
+      </header>
+
+      <div class="detail-body">
+        <figure class="radar">
+          <div class="radar-frame">
+            <canvas id="radar-canvas" aria-label="Radar: mapa z postacią na środku"></canvas>
+            <div class="radar-zoom">
+              <button class="btn btn-icon" id="zoom-in" type="button" aria-label="Przybliż">+</button>
+              <button class="btn btn-icon" id="zoom-out" type="button" aria-label="Oddal">−</button>
+            </div>
+          </div>
+          <figcaption class="radar-bar">
+            <ul class="legend">
+              <li><i class="k-mob"></i>potwór</li>
+              <li><i class="k-boss"></i>boss</li>
+              <li><i class="k-special"></i>specjalny</li>
+              <li><i class="k-metin"></i>metin</li>
+              <li><i class="k-player"></i>gracz</li>
+              <li><i class="k-npc"></i>NPC</li>
+              <li><i class="k-ground"></i>drop</li>
+            </ul>
+            <label class="check small"><input type="checkbox" id="show-names" checked> Nazwy</label>
+          </figcaption>
+          <div class="route-tools" role="group" aria-label="Trasa auto-chodzenia">
+            <button class="btn btn-quiet" id="route-edit" type="button" aria-pressed="false">Dodawaj punkty trasy</button>
+            <button class="btn btn-quiet" id="route-undo" type="button">Cofnij punkt</button>
+            <button class="btn btn-quiet" id="route-clear" type="button">Wyczyść trasę</button>
+          </div>
+          <p class="radar-status" id="radar-status"></p>
+        </figure>
+
+        <section class="controls">
+          <div class="tabs" role="tablist" aria-label="Funkcje bota"></div>
+          <div class="tabpanel" role="tabpanel"></div>
+        </section>
+      </div>
+    </section>
+
+    <!-- Konta: profile autologowania -->
+    <section id="view-accounts" class="view" hidden>
+      <header class="view-head">
+        <div>
+          <h1>Konta i logowanie</h1>
+          <p class="summary">Bot loguje klienta sam: konto, kanał i postać. Hasło jest zaszyfrowane dla Twojego konta Windows.</p>
+        </div>
+      </header>
+      <div id="account-list" class="account-grid"></div>
+      <p class="hint">Nowe konto dodasz na karcie postaci w zakładce <a href="#/">Postacie</a> → „Autologowanie” przy działającym kliencie.</p>
+    </section>
+
+    <!-- Ustawienia -->
+    <section id="view-settings" class="view" hidden>
+      <header class="view-head">
+        <div>
+          <h1>Ustawienia</h1>
+          <p class="summary">Zmiany działają od razu, bez restartu panelu.</p>
+        </div>
+      </header>
+      <div class="settings">
+        <form class="card" id="settings-form" autocomplete="off">
+          <h2>Gra</h2>
+          <p class="admin-state" id="admin-state"></p>
+          <label class="field">Plik gry (exe)
+            <input name="game_path" spellcheck="false" required>
+            <span class="field-note" id="game-note"></span>
+          </label>
+          <label class="check"><input type="checkbox" name="radar_window">
+            Pokazuj też stare okno radaru (tylko do diagnostyki)</label>
+          <div class="form-actions"><button class="btn btn-gold" type="submit">Zapisz ustawienia</button></div>
+        </form>
+        <div id="files" class="files"></div>
+      </div>
+    </section>
+
+    <!-- Dziennik -->
+    <section id="view-logs" class="view logs" hidden>
+      <header class="view-head">
+        <div>
+          <h1>Dziennik</h1>
+          <p class="summary">Ostatnie wpisy radarów, uruchamiania klientów i logowania.</p>
+        </div>
+        <label class="check"><input type="checkbox" id="log-follow" checked> Odświeżaj na bieżąco</label>
+      </header>
+      <div class="logs-body">
+        <ul id="log-list" class="log-list"></ul>
+        <pre id="log-text" class="log-text" tabindex="0">Wybierz plik z listy.</pre>
+      </div>
+    </section>
+  </main>
+</div>
+
+<template id="tpl-plaque">
+  <article class="plaque">
+    <div class="portrait"><img alt=""></div>
+    <div class="who">
+      <h2 class="nick"><a class="open"></a></h2>
+      <p class="meta"></p>
+      <div class="bars">
+        <div class="bar bar-hp"><span class="fill"></span><span class="num"></span></div>
+        <div class="bar bar-sp"><span class="fill"></span><span class="num"></span></div>
+      </div>
+    </div>
+    <div class="switches" role="group" aria-label="Funkcje bota"></div>
+    <div class="actions">
+      <button class="btn btn-quiet act-window" type="button"></button>
+      <button class="btn act-radar" type="button"></button>
+    </div>
+    <details class="autologin">
+      <summary>Autologowanie <span class="al-state"></span></summary>
+      <form class="al-form" autocomplete="off">
+        <label>Login <input name="login" required spellcheck="false"></label>
+        <label>Hasło <input name="password" type="password" autocomplete="new-password"></label>
+        <label>Kanał
+          <select name="channel"><option value="1">CH1</option><option value="2">CH2</option><option value="3">CH3</option><option value="4">CH4</option></select>
+        </label>
+        <label>Postać
+          <select name="slot"><option value="0">1</option><option value="1">2</option><option value="2">3</option><option value="3">4</option></select>
+        </label>
+        <div class="al-checks">
+          <label class="check"><input type="checkbox" name="enabled" checked> Włączone</label>
+          <label class="check"><input type="checkbox" name="restart"> Uruchom klienta ponownie, gdy się zamknie</label>
+          <label class="check"><input type="checkbox" name="radar"> Po wejściu do gry uruchom radar</label>
+        </div>
+        <div class="al-buttons">
+          <button class="btn btn-gold" type="submit">Zapisz</button>
+          <button class="btn btn-quiet al-relog" type="button">Przeloguj teraz</button>
+        </div>
+      </form>
+    </details>
+    <p class="foot"></p>
+  </article>
+</template>
+
+<script src="/static/app.js"></script>
 </body>
 </html>

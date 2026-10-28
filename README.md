@@ -37,7 +37,16 @@ indziej, popraw je przed uruchomieniem.
 - do budowy DLL/injektora: Visual Studio Build Tools z „Desktop development with C++”
   (ścieżka do `vcvars32.bat` w `build.bat`)
 
-## Uruchomienie
+## Uruchomienie (panel w przeglądarce)
+
+Po zbudowaniu DLL (niżej) wystarczy dwuklik w **`panel.bat`**: prosi o uprawnienia administratora,
+uruchamia hub (`recon/hub.py`) i otwiera http://127.0.0.1:8765. Dalej wszystko jest w przeglądarce:
+uruchamianie klientów, autologowanie (Konta), start/stop bota, wszystkie funkcje i trasa na radarze,
+narzędzia (ponowne wstrzyknięcie DLL, kalibracja, skan, budowa mapy), ścieżka gry i pliki
+`data/*_vnums.txt` / `radar_mobs.txt` (Ustawienia) oraz logi (Dziennik). Bot działa bez okna
+(`radar_map.py --headless`); stare okno tkinter można włączyć w Ustawieniach do diagnostyki.
+
+## Uruchomienie ręczne (konsola)
 
 ```bat
 build.bat

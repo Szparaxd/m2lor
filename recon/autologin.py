@@ -33,12 +33,12 @@ from ctypes import wintypes
 
 import autopot
 import clients
+import settings
 
 RECON_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.normpath(os.path.join(RECON_DIR, ".."))
 STORE_PATH = os.path.join(ROOT_DIR, "data", "autologin.json")
 LOGS_DIR = os.path.join(ROOT_DIR, "logs")
-GAME_EXE = r"C:\Metin\Terenzo 2024 - Muchomor Upgrade\GameCore\Klient Terenzo 2024\GameCoreTop.exe"
 
 CHANNELS = (1, 2, 3, 4)
 SLOTS = (0, 1, 2, 3)               # pid1..pid4 konta (w panelu: postac 1..4)
@@ -524,10 +524,11 @@ class Manager:
             self._status(p, "wait", "czekam na ekran logowania" if phase else "zmiana ekranu gry")
 
     def _launch_client(self, alive):
-        """Uruchom GameCoreTop i zwroc PID nowego procesu (albo None)."""
-        if not os.path.isfile(GAME_EXE):
+        """Uruchom GameCoreTop (sciezka z ustawien panelu) i zwroc PID nowego procesu (albo None)."""
+        game = settings.game_path()
+        if not os.path.isfile(game):
             return None
-        subprocess.Popen([GAME_EXE], cwd=os.path.dirname(GAME_EXE))
+        subprocess.Popen([game], cwd=os.path.dirname(game))
         t0 = time.time()
         while time.time() - t0 < NEW_PID_TIMEOUT and not self._stop.is_set():
             new = sorted({pid for pid, _ in clients.list_clients(("GameCoreTop.exe",))} - alive)

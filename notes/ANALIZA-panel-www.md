@@ -156,3 +156,18 @@ dwa klienty naraz.
   w marszu, staje w 388; lider zawraca 4000 j. na zachód mijając followera → ten stoi, rusza przy ~800, staje w 455.
   Start/stop z panelu. NIE testowane: przeszkody na trasie (teren był otwarty), inna mapa / teleport lidera.
 - Poza zakresem (kolejne kroki): wejście za liderem w portal, koń, asysta w walce (bij cel lidera).
+
+**Panel jako jedyna aplikacja (2026-10-28):** `panel.bat` (admin + `hub.py --open`), radar startowany z panelu
+bez okna (`radar_map.py --headless`: `root.withdraw()`, `tick` nie rysuje, tylko stan konia co 0,5 s).
+- botapi: opcje `loot_mode`, `cape`/`cape_period`/`cape_min_mobs` (+ `choices` dla opcji tekstowych), polecenie
+  `action` = reinject/calibrate/rescan/rebuild_map (dawne klawisze J/K/R/M), stan: atak pakietem, peleryna, koń,
+  sposób picia, vnum mikstur; nakładki: dropy, miejsca utknięć, zasięg ataku; nazwy encji innych niż zwykłe moby.
+- hub: `recon/settings.py` (`data/panel.json`: ścieżka gry, okno radaru wł./wył. - launch.py i autologin.py
+  czytają ścieżkę stąd), `/api/settings`, edycja `data/{potion,cape}_vnums.txt` i `radar_mobs.txt`, logi
+  (`/api/logs`, ogon 64 KB), `--no-autologin` (drugi hub do testów).
+- web: powłoka z szyną (Postacie / Konta i logowanie / Ustawienia / Dziennik + postacie w grze), widok postaci
+  z chipami stanu, menu Narzędzia, zakładki Atak pakietem i Peleryna, segmentowe przełączniki trybów.
+- Test na żywo OK (hub na 8766): start bota bez okna dla tester7 z przeglądarki (brak widocznych okien procesu),
+  zmiany loot_mode/cape_period, zła wartość -> 400, rescan, ustawienia (zła ścieżka -> błąd), obcy Origin -> 403,
+  `..` w nazwie logu -> 404, widok mobilny. NIE testowane: uruchomienie `panel.bat` (UAC) i „Uruchom nowego
+  klienta” z nową ścieżką ustawień.
