@@ -397,7 +397,7 @@ AREA_ATK_MAX = 64         # tyle VID-ow na paczke (limit komendy DLL)
 AREA_ATK_KINDS = {"mob", "boss", "king", "special"}  # "potwory" (bez npc/gracza; metiny to kamienie)
 # Atak z PRZESKOKIEM pozycji (jak !tpick z lootu): dla mobow DALEJ niz serwerowy zasieg wrecz radar robi
 # skok pozycji do skupiska, bije je i wraca - lokalnie postac stoi. Dalekie moby gina bez podchodzenia.
-ATTACK_SRV_REACH = 300.0  # jedn.: serwerowy zasieg ataku wrecz (blizej - bij wprost, dalej - przez przeskok)
+ATTACK_SRV_REACH = 250.0  # jedn.: serwerowy zasieg ataku wrecz (blizej - bij wprost, dalej - przez przeskok)
 ATTACK_TP_MAX = 2400.0    # jedn.: najdalszy skok (limit serwera "move too far" ~25 m, jak przy loot-tpick)
 ATTACK_HOP_EVERY = 0.35   # s: odstep miedzy skokami (jedno skupisko na krok, jak loot High)
 ENGAGE_REPLAN = 1.0       # s: trasa dojscia do celu liczona najwyzej co tyle...
@@ -544,7 +544,7 @@ def writable_regions(handle):
 
 
 class RadarMap:
-    def __init__(self, root, map_name=None, process=DEFAULT_PROCESS, pid=None):
+    def __init__(self, root, map_name=None, process=DEFAULT_PROCESS, pid=None, headless=False):
         # po PID: przy kilku klientach tego samego exe nazwa wskazalaby zawsze pierwszy (recon/clients.py)
         self.pm = pymem.Pymem(pid) if pid else pymem.Pymem(process)
         self.proc_name = process
@@ -771,6 +771,10 @@ class RadarMap:
         self._tr_path_sig = None
 
         self.root = root
+        # bez okna (panel WWW steruje przez botapi): tk zostaje tylko petla zdarzen i zmiennymi opcji
+        self.headless = headless
+        if headless:
+            root.withdraw()
         # Przywroc pozycje i rozmiar okna z poprzedniej sesji (albo domyslny wysoki prostokat).
         geo = load_ui_geometry()
         try:
@@ -2002,6 +2006,10 @@ class RadarMap:
 
     # ---------- rysowanie ----------
     def tick(self):
+        if self.headless:                 # nic nie rysujemy; stan konia dla dziennika jak w _draw_mount
+            self.mounted = self._mount_check()
+            self.root.after(500, self.tick)
+            return
         self._refresh_identity_ui()
         c = self.canvas
         c.delete("all")
@@ -3310,6 +3318,14 @@ class RadarMap:
             d = math.hypot(x - hx, y - hy)
             if d <= self.area_atk_radius:
                 targets.append((d, vid, x, y))
+        # metiny: _iter_actors pomija vnum 8xxx, wiec dokladamy je z osobnej listy (maja VID) - bijemy
+        # je tak samo (stojac obok = w zasiegu; dalekie przez przeskok). Normalny atak dziala na kamien.
+        for mx, my, mvid in self._metin_targets():
+            if not mvid:
+                continue
+            d = math.hypot(mx - hx, my - hy)
+            if d <= self.area_atk_radius:
+                targets.append((d, mvid, mx, my))
         # test zasiegu: VID atakowany wczesniej, a teraz nieobecny = padl/odszedl. Zapamietaj najdalszy.
         live = {t[1] for t in targets}
         for v in self._area_atk_prev - live:
@@ -3339,31 +3355,29 @@ class RadarMap:
             self._tattack_t = now
         if hop and not self._tattack_ok:
             hop = False                                      # stara DLL bez !tattack - zachowaj sie zwyczajnie
+        # ZAWSZE: bij wprost wszystko w promieniu (zabija to, co realnie w serwerowym zasiegu teraz;
+        # dalsze serwer odrzuci - ale gdy aggruja i podejda, kolejny tick je dobije).
+        vids = [v for _d, v, _x, _y in targets[:AREA_ATK_MAX]]
+        if autopot.attack_vids(pid, vids, AREA_ATK_MOT):
+            self.area_atk_count += 1
+        hopped = 0
+        hop_d = 0.0
         if hop:
-            near = [v for d, v, _x, _y in targets if d <= ATTACK_SRV_REACH]
+            # dalekie (poza serwerowym zasiegiem) dobij przez przeskok - jedno skupisko na krok;
+            # 'safe' throttle ATTACK_HOP_EVERY, 'aggro' co petle (szybciej czysci, bardziej wykrywalne).
+            every_hop = ATTACK_HOP_EVERY if self.area_atk_mode == "safe" else 0.0
             far = [(d, v, x, y) for d, v, x, y in targets if ATTACK_SRV_REACH < d <= ATTACK_TP_MAX]
-            if near:
-                autopot.attack_vids(pid, near[:AREA_ATK_MAX], AREA_ATK_MOT)
-            hopped = 0
-            hop_d = 0.0
-            if far and now - self._area_hop_next >= ATTACK_HOP_EVERY:
-                hd, _hv, cx, cy = far[0]                     # najblizsze skupisko na krok (jak loot High)
+            if far and now - self._area_hop_next >= every_hop:
+                hd, _hv, cx, cy = far[0]                     # najblizsze skupisko (najpierw to, co blisko)
                 cluster = [v for d, v, x, y in far if math.hypot(x - cx, y - cy) <= ATTACK_SRV_REACH]
                 if autopot.tattack(pid, cx, cy, cluster[:AREA_ATK_MAX], AREA_ATK_MOT):
-                    self.area_atk_count += 1
                     hopped, hop_d = len(cluster), hd
                     self._area_hop_next = now
-            if near or hopped:
-                self._area_atk_status = (
-                    "bij %d wrecz + przeskok %d@d%.0f  <=%.0f [%s]  zniklo:%d"
-                    % (len(near), hopped, hop_d, self.area_atk_radius, tryb, self.area_atk_gone))
-        else:
-            vids = [v for _d, v, _x, _y in targets[:AREA_ATK_MAX]]
-            if autopot.attack_vids(pid, vids, AREA_ATK_MOT):
-                self.area_atk_count += 1
-                self._area_atk_status = ("bije %d mob(ow) <=%.0f  [%s]  zniklo:%d  max skuteczny:%.0f"
-                                         % (len(vids), self.area_atk_radius, tryb,
-                                            self.area_atk_gone, self._area_atk_maxhit))
+        self._area_atk_status = (
+            "bije %d <=%.0f [%s]%s  zniklo:%d  max skuteczny:%.0f"
+            % (len(vids), self.area_atk_radius, tryb,
+               ("  +przeskok %d@d%.0f" % (hopped, hop_d)) if hop else "",
+               self.area_atk_gone, self._area_atk_maxhit))
         self._area_atk_last = now
 
     def _cape_step(self):
@@ -3814,6 +3828,8 @@ def parse_args(argv=None):
                    help="nazwa procesu gry (domyslnie: jedyny uruchomiony z %s)" % ", ".join(clients.GAME_EXES))
     p.add_argument("-p", "--pid", type=int, default=None,
                    help="PID klienta - wymagany, gdy dziala kilka klientow (lista: python recon/clients.py)")
+    p.add_argument("--headless", action="store_true",
+                   help="bez okna radaru - sterowanie tylko z panelu WWW (python recon/hub.py)")
     args = p.parse_args(argv)
     if args.exe and not args.exe.lower().endswith(".exe"):   # "-e vCore" == "-e vCore.exe"
         args.exe += ".exe"
@@ -3834,7 +3850,7 @@ def main():
         return
     root.title("Metin2 Radar - MAPA (%s, PID %d)" % (exe, pid))
     try:
-        RadarMap(root, args.map_name, exe, pid)
+        RadarMap(root, args.map_name, exe, pid, headless=args.headless)
     except pymem.exception.ProcessNotFound:
         print("[!] Proces %s (PID %d) zniknal. Gra wlaczona?" % (exe, pid))
         return
