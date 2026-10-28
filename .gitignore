@@ -44,3 +44,5 @@ desktop.ini
 data/maps/
 # Portrety klas wyciete z paczki ETC (recon/extract_faces.py) - zasoby gry, odtwarzalne
 data/faces/
+# API radarow: port+token per klient (recon/botapi.py) - generowane w trakcie dzialania
+data/workers/

@@ -56,6 +56,7 @@ import pymem.process
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import autopot
+import botapi
 import calibrate
 import clients
 import collision as collision_mod
@@ -622,6 +623,8 @@ class RadarMap:
         threading.Thread(target=self._rescan_loop, daemon=True).start()
         # osobna, szybka petla auto-mikstury (reakcja ~POTION_POLL, niezaleznie od rysowania)
         threading.Thread(target=self._autopot_loop, daemon=True).start()
+        # API dla panelu WWW (recon/botapi.py): stan + sterowanie bez okna, port w data/workers/<pid>.json
+        self.api = botapi.start(self)
         self.tick()
 
     def _dbg(self, fmt, *args):

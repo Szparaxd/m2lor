@@ -94,3 +94,17 @@ dwa klienty naraz.
   zapas: `player.job` z bazy; poziom z punktu [1].
 - `recon/extract_faces.py` → `data/faces/` (13 PNG). Atlasy DDS leżą w `d:/ymir work/ui/` (nie obok `.sub`).
 - Radar: nagłówek panelu (portret + „Nick - Klasa lv N”) i tytuł okna z nickiem i PID.
+
+**W2 jako cienka warstwa API (2026-10-28)** — pełny podział `radar_map.py` odłożony (inna sesja go edytuje):
+- `recon/botapi.py`: `snapshot()` czyta pola RadarMap (tożsamość, HP/PM, pozycja, mapa, opcje, buffy, statusy,
+  opcjonalnie encje w promieniu 6000); `command(name, value)` ustawia zmienną tk i woła istniejący handler `_on_*`
+  w wątku GUI (`root.after` + czekanie na wynik) = jak klik w panelu. Opcje opisuje tabela `OPTIONS` w module;
+  opcje nieobecne w danej wersji radaru są pomijane (np. `pot_sizes` z pracy innej sesji).
+- Serwer HTTP (stdlib) 127.0.0.1, losowy port, nagłówek `X-Bot-Token`; port+token w `data/workers/<pid>.json`
+  (znika przy wyjściu radaru) — po tym pliku hub (W3) znajdzie workery.
+  `GET /api/snapshot[?entities=1]`, `GET /api/options`, `POST /api/command {"name","value"}`.
+- W `radar_map.py` tylko import + `self.api = botapi.start(self)` na końcu konstruktora.
+- Przetestowane na atrapie radaru z prawdziwym tkinterem (token 401, snapshot, komendy w MainThread, clamp,
+  błędy 400/404, sprzężenie pot_low→pot_high z handlera). **Test z grą OK** (GameCoreTop, Tester3 lv 6):
+  snapshot 24 ms z encjami / 1 ms bez, 62 moby; komendy farm_radius/pot_cd/autoloot/pot_low widoczne w panelu tk,
+  wartości przywrócone, log radaru bez błędów.
