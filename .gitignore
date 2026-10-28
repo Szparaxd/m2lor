@@ -46,3 +46,5 @@ data/maps/
 data/faces/
 # API radarow: port+token per klient (recon/botapi.py) - generowane w trakcie dzialania
 data/workers/
+# Pozycje postaci dla podazania (recon/follow.py) - generowane w trakcie dzialania
+data/beacons/

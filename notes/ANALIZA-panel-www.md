@@ -142,3 +142,17 @@ dwa klienty naraz.
 - Test na żywo OK (Tester3, trasa 11 pkt): klik 100 px na wschód → punkt (41789, 68300) zgodny z przeliczeniem
   skali; cofnięcie przywraca plik trasy 1:1; „Anuluj” w potwierdzeniu nic nie usuwa; czyszczenie → 0 pkt i pusty plik,
   potem odtworzenie 11 pkt z kopii (radar i plik identyczne z oryginałem); złe dane → 400.
+
+**W5 — podążanie za postacią z innego klienta (2026-10-28):**
+- `recon/follow.py`: `Beacon` (co 0,2 s `data/beacons/<nick>.json` {nick, map, x, y, t}) + `Follower` w radarze
+  postaci podążającej: co 0,25 s czyta beacon lidera (po nicku), histereza (rusza > dystans+300, staje < dystans),
+  cel = punkt 0,6·dystans przed liderem, trasa A* radaru (`_engage_path`/`_route_aim`/`_goto`, ponowienie co 0,3 s),
+  własny krok w bok przy utknięciu (NIE `_stuck_nudge` — ten przy 2. utknięciu atakuje moba). Czeka, gdy lider
+  na innej mapie albo sygnał starszy niż 3 s.
+- botapi: polecenie `follow` {leader, distance} / {leader: null}; włączenie wyłącza farmę i auto-chodzenie;
+  `follow` w snapshocie. Panel: zakładka „Podążanie” (lider z listy postaci z radarem, dystans, start/stop, stan),
+  na liście „Idzie za X”.
+- Test na żywo OK (Tester3 idzie za Tester4, a1, dystans 500): lider 3000 j. na wschód → follower 800–900 za nim
+  w marszu, staje w 388; lider zawraca 4000 j. na zachód mijając followera → ten stoi, rusza przy ~800, staje w 455.
+  Start/stop z panelu. NIE testowane: przeszkody na trasie (teren był otwarty), inna mapa / teleport lidera.
+- Poza zakresem (kolejne kroki): wejście za liderem w portal, koń, asysta w walce (bij cel lidera).

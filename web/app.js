@@ -200,6 +200,7 @@ const listView = {
     if (s && s.status) {
       if (s.status.dll) parts.push(`DLL: ${s.status.dll}.`);
       if (s.status.combat) parts.push(`Walka: ${s.status.combat}.`);
+      if (s.follow && s.follow.leader) parts.push(`Idzie za ${s.follow.leader}: ${s.follow.state}.`);
     }
     foot.textContent = parts.join(" ");
     if (!c.window_visible) {
@@ -291,6 +292,10 @@ const detailView = {
     try {
       const list = await (await fetch("/api/clients", { cache: "no-store" })).json();
       this.client = list.clients.find((c) => c.pid === pid) || { pid, radar: "gone", window_visible: false };
+      // kandydaci na lidera: inne postacie z działającym radarem
+      this.others = list.clients
+        .filter((c) => c.pid !== pid && c.snapshot && c.snapshot.ident.nick)
+        .map((c) => ({ nick: c.snapshot.ident.nick, map: c.snapshot.map }));
     } catch { /* lista co sekundę wystarczy; błąd pokaże refreshSnap */ }
   },
 
@@ -331,14 +336,15 @@ const detailView = {
       if (st.combat) bits.push(`walka: ${st.combat}`);
       this.status.textContent = bits.join(". ") + ".";
     }
-    this.renderTabs(s ? s.options : {});
+    this.renderTabs(s ? s.options : {}, !!(s && s.follow));
     this.renderControls(s);
     this.draw();
   },
 
   /* ---------- opcje ---------- */
-  renderTabs(options) {
+  renderTabs(options, hasFollow) {
     const avail = TABS.filter(([, names]) => names.some((n) => n in options));
+    if (hasFollow) avail.push(["Podążanie", []]);
     const key = avail.map(([t]) => t).join();
     if (key === this.tabsKey) return;
     this.tabsKey = key;
@@ -372,6 +378,7 @@ const detailView = {
       ctl.set(s.options[name].value);
     }
     if (this.tab === "Buffy") this.renderBuffs(s.buffs || []);
+    if (this.tab === "Podążanie") this.renderFollow(s);
   },
 
   makeControl(name, spec) {
@@ -461,6 +468,69 @@ const detailView = {
     head.append(lab, out);
     row.append(head, input);
     return { el: row, set: (v) => { if (!dragging && document.activeElement !== input) { input.value = v; out.textContent = fmt(v); } } };
+  },
+
+  renderFollow(s) {
+    const f = s.follow;
+    let box = $(".follow", this.panel);
+    if (!box) {
+      box = document.createElement("div");
+      box.className = "opt follow";
+      box.innerHTML = `
+        <p class="follow-state"></p>
+        <label class="opt-label" for="follow-leader">Idź za postacią</label>
+        <select id="follow-leader"></select>
+        <div class="opt-head"><label class="opt-label" for="follow-dist">Trzymaj się w odległości</label><output for="follow-dist"></output></div>
+        <input type="range" id="follow-dist" min="200" max="3000" step="100">
+        <div class="follow-actions"><button type="button" class="btn btn-gold" id="follow-go"></button></div>
+        <p class="hint">Postać idzie trasą z omijaniem przeszkód i staje w podanej odległości. Na czas podążania
+        farma i auto-chodzenie wyłączają się. Lider musi mieć działający radar i być na tej samej mapie.</p>`;
+      this.panel.append(box);
+      const dist = $("#follow-dist", box);
+      dist.value = f.distance;
+      $("output", box).textContent = f.distance;
+      dist.addEventListener("input", () => { $("output", box).textContent = dist.value; });
+      dist.addEventListener("change", async () => {
+        const cur = this.snap && this.snap.follow;
+        if (cur && cur.leader) {           // w trakcie podążania zmiana dystansu działa od razu
+          try { await sendOption(this.pid, "follow", { leader: cur.leader, distance: Number(dist.value) }); }
+          catch (e) { showNotice(`Podążanie: ${e.message}`); }
+        }
+      });
+      $("#follow-go", box).addEventListener("click", async (ev) => {
+        const btn = ev.currentTarget;
+        const cur = this.snap && this.snap.follow;
+        const leader = cur && cur.leader ? null : $("#follow-leader", box).value;
+        if (leader === "") { showNotice("Podążanie: wybierz postać, za którą iść."); return; }
+        btn.disabled = true;
+        try {
+          await sendOption(this.pid, "follow", { leader, distance: Number(dist.value) });
+          await this.refreshSnap();
+        } catch (e) { showNotice(`Podążanie: ${e.message}`); }
+        btn.disabled = false;
+      });
+    }
+    const sel = $("#follow-leader", box);
+    const others = this.others || [];
+    const key = others.map((o) => `${o.nick}@${o.map}`).join() + `|${f.leader || ""}`;
+    if (sel.dataset.key !== key && document.activeElement !== sel) {
+      const keep = f.leader || sel.value;
+      sel.replaceChildren();
+      const names = others.map((o) => o.nick);
+      if (f.leader && !names.includes(f.leader)) others.unshift({ nick: f.leader, map: null });
+      if (!others.length) sel.append(new Option("Brak innych postaci z działającym radarem", ""));
+      for (const o of others) {
+        const where = o.map == null ? "radar nie działa" : o.map === s.map ? "ta sama mapa" : mapLabel(o.map);
+        sel.append(new Option(`${o.nick} (${where})`, o.nick));
+      }
+      if (keep) sel.value = keep;
+      sel.dataset.key = key;
+    }
+    sel.disabled = !!f.leader;
+    $(".follow-state", box).textContent = f.leader ? `Idę za ${f.leader}: ${f.state}.` : "Podążanie wyłączone.";
+    const go = $("#follow-go", box);
+    go.textContent = f.leader ? "Przestań podążać" : "Idź za wybraną postacią";
+    go.className = `btn${f.leader ? "" : " btn-gold"}`;
   },
 
   renderBuffs(buffs) {

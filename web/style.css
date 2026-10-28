@@ -345,3 +345,17 @@ input[type="range"] { width: 100%; accent-color: var(--gold); }
 .route-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 #route-edit[aria-pressed="true"] { border-color: var(--jade); color: var(--ink); background: rgba(95, 163, 138, 0.15); }
 #radar-canvas.is-editing { cursor: crosshair; border-color: var(--jade); }
+
+/* --- podążanie --- */
+.follow { display: grid; gap: 8px; }
+.follow-state { margin: 0 0 6px; color: var(--gold); }
+.follow select {
+  font: 400 14.5px "IBM Plex Sans", sans-serif;
+  color: var(--ink);
+  background: var(--lacquer);
+  border: 1px solid var(--wood-edge);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.follow .opt-head { margin: 8px 0 0; }
+.follow-actions { margin: 6px 0 4px; }

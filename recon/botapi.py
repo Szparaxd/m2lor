@@ -13,6 +13,7 @@ data/workers/<pid>.json (hub znajduje po nim workery; plik znika przy wyjsciu ra
   POST /api/command {"name","value"}    zmiana opcji (jak w panelu); "buff" -> value {"vnum","on"}
   POST /api/shutdown                    zamknij radar (jak krzyzyk okna)
   trasa: name = waypoint_add {"x","y"} / waypoint_undo / waypoint_clear  (jak Ctrl+klik / klawisz C)
+  podazanie: name = follow, value {"leader": "Nick", "distance": N} albo {"leader": null}
 Recznie:  curl -H "X-Bot-Token: <token>" http://127.0.0.1:<port>/api/snapshot
 """
 import atexit
@@ -26,6 +27,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import follow
 import identity
 
 WORKERS_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "workers"))
@@ -68,6 +70,7 @@ def _get(obj, dotted):
 class BotApi:
     def __init__(self, radar):
         self.r = radar
+        self.follower = None          # follow.Follower - ustawiany w start() (atrapa w testach go nie ma)
 
     # ---------- odczyt (dowolny watek; tylko pola i odczyty pamieci) ----------
     def options(self):
@@ -119,6 +122,7 @@ class BotApi:
                 "buff": getattr(getattr(r, "autobuff", None), "status", ""),
                 "waypoints": len(getattr(r, "path", []) or []),
             },
+            "follow": self.follower.status() if self.follower else None,
         }
         if entities and hx is not None:
             snap["entities"] = self.entities(hx, hy)
@@ -163,6 +167,8 @@ class BotApi:
             fn = self._pot_sizes_fn(value)
         elif name in ("waypoint_add", "waypoint_undo", "waypoint_clear"):
             fn = self._waypoint_fn(name, value)
+        elif name == "follow":
+            fn = self._follow_fn(value)
         elif name in OPTIONS:
             fn = self._option_fn(name, value)
         else:
@@ -223,6 +229,36 @@ class BotApi:
                 self.r.autobuff.enabled.add(vnum)
             else:
                 self.r.autobuff.enabled.discard(vnum)
+        return fn
+
+    def _follow_fn(self, value):
+        """Podazanie (recon/follow.py): {"leader": nick, "distance": N} wlacza, {"leader": null} wylacza.
+        Na start wylacza farme i auto-chodzenie (inaczej trzy petle sterowalyby jedna postacia)."""
+        if not isinstance(value, dict):
+            raise ValueError('follow: oczekuje {"leader": "Nick" | null, "distance": N}')
+        leader = value.get("leader")
+        if leader is not None and (not isinstance(leader, str) or not identity.NICK_RE.match(leader)):
+            raise ValueError("follow: zly nick lidera")
+        if leader and leader == self.r.ident.get("nick"):
+            raise ValueError("follow: postac nie moze isc sama za soba")
+        dist = value.get("distance")
+        if dist is not None:
+            try:
+                dist = min(max(int(dist), 200), 3000)
+            except (TypeError, ValueError):
+                raise ValueError("follow: distance musi byc liczba")
+        fol = self.follower
+
+        def fn():
+            if not leader:
+                fol.stop()
+                return
+            for opt in ("farm", "autowalk"):
+                typ, attr, var, handler, _rng = OPTIONS[opt]
+                if hasattr(self.r, var) and getattr(self.r, attr):
+                    getattr(self.r, var).set(False)
+                    getattr(self.r, handler)()
+            fol.start(leader, dist)
         return fn
 
     def _waypoint_fn(self, name, value):
@@ -332,6 +368,9 @@ def _handler_cls(api, token):
 def start(radar, port=0):
     """Uruchom API radaru w watku w tle; zapisz data/workers/<pid>.json. Zwraca BotApi (albo None przy bledzie)."""
     api = BotApi(radar)
+    # podazanie miedzy klientami: pozycja tej postaci dla innych + sterownik (recon/follow.py)
+    follow.Beacon(radar)
+    api.follower = follow.Follower(radar)
     token = secrets.token_hex(16)
     try:
         srv = ThreadingHTTPServer(("127.0.0.1", port), _handler_cls(api, token))
