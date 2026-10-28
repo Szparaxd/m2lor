@@ -29,7 +29,9 @@ LOS_WINDOW = 40       # wygladzanie LOS: sprawdzaj najwyzej tyle komorek do przo
 # Offsety per build (nazwa procesu -> dict). GameCoreTop zweryfikowany na zywo.
 BUILD_OFFSETS = {
     "gamecoretop.exe": dict(terrain_arr=0x40, count=0x70, cur=0x74, attr=0x18E1A),
-    # vCore: do uzupelnienia osobnym reconem (inny build).
+    # vCore (2026-10-28): ten sam uklad - CMapOutdoor+0x40 = 9x CTerrain*, 0x70/0x74 short; attrMap 0x18E1A
+    # potwierdzony ciagloscia szwow miedzy sasiednimi sektorami (43/3072 niezgodnosci vs ~600 dla +-2..16).
+    "vcore.exe": dict(terrain_arr=0x40, count=0x70, cur=0x74, attr=0x18E1A),
 }
 
 

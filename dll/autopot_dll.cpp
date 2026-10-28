@@ -120,8 +120,10 @@ static bool resolve_python(void)
 // Hook = CPythonApplication::Process (0xB3A90): petla glowna (PeekMessage) wola go CO KLATKE na glownym
 // watku; prolog 55 8B EC 6A FF (push ebp;mov ebp,esp;push -1) = 5 bajtow, BEZ skokow w patch. NIE uzywac
 // 0xB3750/RunOneFrame (jne w patch -> crash) ani starego 0xB38C0 (po rekompilacji to juz inna funkcja).
-#define VCORE_HOOK_RVA             0xB3A90
-#define VCORE_HOOK_RESUME_RVA      0xB3A95
+// 2026-10-28: launcher znow podmienil vCore.exe - Process przesunal sie na 0xB3B60 (reszta RVA bez zmian).
+// Dlatego hook i singleton/PickCloseItem sa teraz SZUKANE W PAMIECI (resolve_vcore_rvas) - stale ponizej to
+// tylko fallback, gdy sygnatura nie trafi.
+#define VCORE_HOOK_RVA             0xB3B60
 #define VCORE_RULQS_RVA            0x81190        // RequestUseLocalQuickSlot (__thiscall, 1 arg, ret 4)
 #define VCORE_PICK_RVA             0x83750        // CPythonPlayer::PickCloseItem (__thiscall, 0 arg, ret)
 #define VCORE_MOVETO_RVA           0x325F0        // CInstanceBase::NEW_MoveToDestPixelPositionDirection (thiscall, arg TPixelPosition*)
@@ -129,6 +131,11 @@ static bool resolve_python(void)
 #define VCORE_GETMAIN_VIDX         0x88           // bajtowy indeks wirtualnej GetMainActorPtr w vtable [player+4]
 #define VCORE_PLAYER_SINGLETON_RVA 0x1B8D674      // *(void**) = CPythonPlayer* (bylo 0x1B8C664)
 static const unsigned char VCORE_PROLOGUE[5] = {0x55, 0x8B, 0xEC, 0x6A, 0xFF};
+
+// RVA uzywane w czasie dzialania (vCore) - start = stale, nadpisywane przez resolve_vcore_rvas().
+static uintptr_t g_hook_rva = VCORE_HOOK_RVA;
+static uintptr_t g_pick_rva = VCORE_PICK_RVA;
+static uintptr_t g_sing_rva = VCORE_PLAYER_SINGLETON_RVA;
 
 // GameCoreTop.exe (INNY build; ImageBase 0x400000). Ruch natywny NIE przez hook (go nie ma), lecz przez
 // Py_AddPendingCall (pending-calls sa tu opruzniane). Adresy: analiza binarki od eksportu player.PickCloseItem.
@@ -159,7 +166,7 @@ struct GotoArg { float x, y; };                  // ladunek dla natywnego pendin
 // vtable[0x88] (GetMainActorPtr), wolana z this=player+4. Zestaw RVA zalezy od buildu. NULL poza gra.
 static void *get_main_char(void)
 {
-    uintptr_t sing = g_is_vcore ? VCORE_PLAYER_SINGLETON_RVA : GC_PLAYER_SINGLETON_RVA;
+    uintptr_t sing = g_is_vcore ? g_sing_rva : GC_PLAYER_SINGLETON_RVA;
     char *pl = *(char **)(g_base + sing);
     if (!pl)
         return NULL;
@@ -218,16 +225,16 @@ static int __cdecl pending_getpos(void *arg)
 static __declspec(noinline) void on_frame(void)
 {
     if (InterlockedExchange(&g_want_drink, 0)) {
-        void *self = *(void **)(g_base + VCORE_PLAYER_SINGLETON_RVA);
+        void *self = *(void **)(g_base + g_sing_rva);
         if (self)
             ((PFN_RULQS)(g_base + VCORE_RULQS_RVA))(self, (unsigned)g_slot);
     }
     // auto-loot: natywne PickCloseItem (podnies najblizszy drop) - tez TYLKO z glownego watku
     // (SendClickItemPacket rusza bufor pakietow). Radar prosi komenda potoku "!pick".
     if (InterlockedExchange(&g_want_pick, 0)) {
-        void *self = *(void **)(g_base + VCORE_PLAYER_SINGLETON_RVA);
+        void *self = *(void **)(g_base + g_sing_rva);
         if (self)
-            ((PFN_PICK)(g_base + VCORE_PICK_RVA))(self);
+            ((PFN_PICK)(g_base + g_pick_rva))(self);
     }
     // kanarek (!getpos) i ruch (!goto) - wspolne helpery (vCore: stad z hooka; GameCoreTop: z pending-call)
     if (InterlockedExchange(&g_want_getpos, 0))
@@ -261,12 +268,98 @@ static bool is_vcore(void)
     return _stricmp(b, "vCore.exe") == 0;
 }
 
+// --- wyszukiwanie RVA po sygnaturach (odporne na przekompilowanie/podmiane exe przez launcher) ---
+static bool sec_range(const char *name, unsigned char **lo, unsigned char **hi)
+{
+    IMAGE_DOS_HEADER *dos = (IMAGE_DOS_HEADER *)g_base;
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(g_base + dos->e_lfanew);
+    IMAGE_SECTION_HEADER *sh = IMAGE_FIRST_SECTION(nt);
+    for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++sh) {
+        if (strncmp((const char *)sh->Name, name, 8) == 0) {
+            *lo = g_base + sh->VirtualAddress;
+            *hi = *lo + sh->Misc.VirtualSize;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Wzorzec z maska ('?' = dowolny bajt). Zwraca JEDYNE trafienie; brak albo wiecej niz 1 -> NULL.
+static unsigned char *find_unique(unsigned char *lo, unsigned char *hi, const unsigned char *pat,
+                                  const char *mask, size_t n)
+{
+    unsigned char *hit = NULL;
+    for (unsigned char *p = lo; p + n <= hi; ++p) {
+        size_t k = 0;
+        while (k < n && (mask[k] == '?' || p[k] == pat[k]))
+            ++k;
+        if (k == n) {
+            if (hit)
+                return NULL;                       // niejednoznaczne - nie ufamy
+            hit = p;
+        }
+    }
+    return hit;
+}
+
+static void resolve_vcore_rvas(void)
+{
+    unsigned char *tlo, *thi, *rlo, *rhi, *dlo, *dhi;
+    if (!sec_range(".text", &tlo, &thi) || !sec_range(".rdata", &rlo, &rhi) || !sec_range(".data", &dlo, &dhi)) {
+        dbg("sig: brak sekcji - zostaja stale");
+        return;
+    }
+    // 1) Petla glowna: while(1){ if(IsMessage()){ if(!MessageProcess()) break; }
+    //    else { if(!Process()) break; ... } }  ->  ostatnie E8 = CPythonApplication::Process (co klatke).
+    //    56 8B F1 | 8B CE E8 ?? | 8B CE 84 C0 74 ?? | E8 ?? 84 C0 75 ?? | 5E C3 | E8 <Process>
+    static const unsigned char lp[] = {0x56, 0x8B, 0xF1, 0x8B, 0xCE, 0xE8, 0, 0, 0, 0, 0x8B, 0xCE, 0x84, 0xC0,
+                                       0x74, 0, 0xE8, 0, 0, 0, 0, 0x84, 0xC0, 0x75, 0, 0x5E, 0xC3, 0xE8};
+    static const char lm[] = "xxxxxx????xxxxx?x????xxx?xxx";
+    unsigned char *m = find_unique(tlo, thi, lp, lm, sizeof(lp));
+    if (m) {
+        unsigned char *call = m + sizeof(lp) - 1;
+        unsigned char *proc = call + 5 + *(int32_t *)(call + 1);
+        if (proc >= tlo && proc + 5 <= thi && memcmp(proc, VCORE_PROLOGUE, 5) == 0) {
+            g_hook_rva = (uintptr_t)(proc - g_base);
+            dbg("sig: Process = base+0x%X (z petli glownej @0x%X)", (unsigned)g_hook_rva, (unsigned)(m - g_base));
+        } else {
+            dbg("sig: Process z petli ma inny prolog - zostaje 0x%X", (unsigned)g_hook_rva);
+        }
+    } else {
+        dbg("sig: petla glowna nie znaleziona - zostaje 0x%X", (unsigned)g_hook_rva);
+    }
+    // 2) Tabela metod modulu player: PyMethodDef{"PickCloseItem", playerPickCloseItem, ...}. Wrapper:
+    //    8B 0D <&singleton> E8 <PickCloseItem>  ->  oba RVA naraz.
+    static const char nm[] = "PickCloseItem";
+    for (unsigned char *p = rlo + 1; p + sizeof(nm) <= rhi; ++p) {
+        if (p[-1] != 0 || memcmp(p, nm, sizeof(nm)) != 0)
+            continue;
+        for (unsigned char *q = dlo; q + 8 <= dhi; q += 4) {
+            if (*(unsigned char **)q != p)
+                continue;
+            unsigned char *fn = *(unsigned char **)(q + 4);
+            if (fn < tlo || fn + 11 > thi || fn[0] != 0x8B || fn[1] != 0x0D || fn[6] != 0xE8)
+                continue;
+            unsigned char *sing = *(unsigned char **)(fn + 2);
+            unsigned char *pick = fn + 11 + *(int32_t *)(fn + 7);
+            if (sing < dlo || sing >= dhi || pick < tlo || pick >= thi)
+                continue;
+            g_sing_rva = (uintptr_t)(sing - g_base);
+            g_pick_rva = (uintptr_t)(pick - g_base);
+            dbg("sig: singleton = base+0x%X, PickCloseItem = base+0x%X", (unsigned)g_sing_rva, (unsigned)g_pick_rva);
+            return;
+        }
+    }
+    dbg("sig: PyMethodDef PickCloseItem nie znaleziony - zostaja stale");
+}
+
 static void install_vcore_hook(void)
 {
     g_base = (unsigned char *)GetModuleHandleA(NULL);     // baza glownego exe (vCore.exe)
-    unsigned char *target = g_base + VCORE_HOOK_RVA;
+    resolve_vcore_rvas();
+    unsigned char *target = g_base + g_hook_rva;
     if (memcmp(target, VCORE_PROLOGUE, 5) != 0) {
-        dbg("hook: prolog @0x%X nie pasuje (inny build vCore?) - rezygnuje", VCORE_HOOK_RVA);
+        dbg("hook: prolog @0x%X nie pasuje (inny build vCore?) - rezygnuje", (unsigned)g_hook_rva);
         return;
     }
     g_tramp = VirtualAlloc(NULL, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
@@ -277,7 +370,7 @@ static void install_vcore_hook(void)
     unsigned char *t = (unsigned char *)g_tramp;
     memcpy(t, target, 5);                                  // skradzione: 56 8B F1 8B CE
     t[5] = 0x68;                                           // push imm32
-    *(DWORD *)(t + 6) = (DWORD)(g_base + VCORE_HOOK_RESUME_RVA);
+    *(DWORD *)(t + 6) = (DWORD)(target + 5);              // powrot za skradzione bajty
     t[10] = 0xC3;                                          // ret -> RunOneFrame+5
 
     DWORD old;
@@ -289,7 +382,7 @@ static void install_vcore_hook(void)
     *(DWORD *)(target + 1) = (DWORD)((unsigned char *)hook_stub - (target + 5));
     VirtualProtect(target, 5, old, &old);
     FlushInstructionCache(GetCurrentProcess(), target, 5);
-    dbg("hook: ZAINSTALOWANY na RunOneFrame (base+0x%X), tramp=%p", VCORE_HOOK_RVA, g_tramp);
+    dbg("hook: ZAINSTALOWANY na Process (base+0x%X), tramp=%p", (unsigned)g_hook_rva, g_tramp);
 
     char mk[160];
     _snprintf(mk, sizeof(mk), "C:\\Metin\\radar-project\\logs\\hook_%lu.ok", GetCurrentProcessId());

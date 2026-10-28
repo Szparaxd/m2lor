@@ -200,7 +200,9 @@ WALK_NUDGE_HOLD = 0.5     # s: tyle trzymamy krok w bok (bez nadpisywania go zwy
 SPEED_OFFSETS = {
     # Efekt zweryfikowany W GRZE (odwrotnie niz statyczne nazwy subagenta): +0x498 = RUCH, +0x49C = ATAK.
     "gamecoretop.exe": dict(mov=0x498, atk=0x49C),
-    # vCore: do uzupelnienia (inny build).
+    # vCore (2026-10-28, sonda na zywo): pola aktora przesuniete o +4 (jak pozycja 0x510) - wlasna postac
+    # +0x49C=1.64 (odpowiednik GameCoreTop +0x498), moby 0.7/1.0/1.3 na +0x49C.
+    "vcore.exe": dict(mov=0x49C, atk=0x4A0),
 }
 # Auto-farm: wpisujemy VID moba do CPythonPlayer.m_dwAutoAttackTargetVID (off "autoatk" wzgl. obiektu
 # CPythonPlayer = self.player_obj); klient (__Update_AutoAttack) sam podchodzi, bije i czysci po smierci.
@@ -208,7 +210,10 @@ SPEED_OFFSETS = {
 FARM_OFFSETS = {
     # zweryfikowane na zywo: VID moba = CActorInstance+0x558; auto-attack target = CPythonPlayer+0x50.
     "gamecoretop.exe": dict(vid=0x558, autoatk=0x50),
-    # vCore: do uzupelnienia (inny build).
+    # vCore (2026-10-28): VID aktora +0x55C (sekwencyjne VID-y na zywo, +4 jak pozycja); autoatk +0x50
+    # (statycznie: __Update_AutoAttack @RVA 0x825B0 'cmp dword [ebx+0x50],0'). CPythonPlayer bez RTTI ->
+    # obiekt gracza bierzemy ze wskaznika singletona (POINT_PTR_CLIENTS singleton_rva).
+    "vcore.exe": dict(vid=0x55C, autoatk=0x50),
 }
 FARM_RADIUS = 2500.0      # domyslny promien okregu farmienia (jedn. swiata; ~25 px minimapy)
 FARM_MELEE = 300.0        # jedn. swiata: tak blisko celu = oddaj atak klientowi (dalej - dochodzimy A*)
@@ -1062,6 +1067,14 @@ class RadarMap:
         self.mapout_obj = mapout if mapout is not None else self.mapout_obj
         if self.mapout_obj:
             self.collision.set_mapout(self.mapout_obj)
+        if player is None and player_vt is None and self.pt_ptr is not None:
+            # build bez RTTI CPythonPlayer (vCore): obiekt gracza = *(base+singleton_rva). Potrzebny do
+            # auto-farmu (pole auto-ataku). HP i tak idzie przez read_point_ptr - tu tylko player_obj.
+            try:
+                sp = self.pm.read_uint(self.base + self.pt_ptr["singleton_rva"])
+            except Exception:
+                sp = 0
+            self.player_obj = sp or None
         if player is not None and (player != self.player_obj or self.points_addr is None):
             off = autopot.find_points(self.pm, player)
             self.player_obj = player
