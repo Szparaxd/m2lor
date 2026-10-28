@@ -399,7 +399,8 @@ AREA_ATK_KINDS = {"mob", "boss", "king", "special"}  # "potwory" (bez npc/gracza
 # skok pozycji do skupiska, bije je i wraca - lokalnie postac stoi. Dalekie moby gina bez podchodzenia.
 ATTACK_SRV_REACH = 250.0  # jedn.: serwerowy zasieg ataku wrecz (blizej - bij wprost, dalej - przez przeskok)
 ATTACK_TP_MAX = 2400.0    # jedn.: najdalszy skok (limit serwera "move too far" ~25 m, jak przy loot-tpick)
-ATTACK_HOP_EVERY = 0.35   # s: odstep miedzy skokami (jedno skupisko na krok, jak loot High)
+ATTACK_HOP_EVERY = 0.35   # s: odstep miedzy skokami w trybie 'safe' (jedno skupisko na krok, jak loot High)
+ATTACK_HOP_MAX_AGGRO = 6  # 'aggro': tyle skupisk na tik (szybkie czyszczenie calego obszaru; duzo skokow)
 ENGAGE_REPLAN = 1.0       # s: trasa dojscia do celu liczona najwyzej co tyle...
 ENGAGE_REPLAN_MOVE = 200.0  # ...albo gdy cel przesunal sie o wiecej niz to
 OBST_MOB_MIN = 250.0      # moby blizej postaci nie sa przeszkoda (ruszaja sie / to one nas bija)
@@ -731,7 +732,9 @@ class RadarMap:
         self._area_atk_last = 0.0      # kiedy ostatnio wyslano paczke (throttle)
         self._area_atk_prev = set()    # VID-y atakowane w poprzednim kroku (wykrycie znikniecia)
         self._area_atk_dist = {}       # vid -> ostatni dystans ataku (max skuteczny = najdalszy, ktory padl)
-        self._area_atk_maxhit = 0.0    # najdalszy dystans, z ktorego atakowany mob znikl (test zasiegu)
+        self._area_atk_maxhit = 0.0    # najdalszy dystans BEZPOSREDNIEGO ataku, z ktorego mob znikl (=realny zasieg serwera)
+        self._area_atk_hopset = set()  # VID-y atakowane ostatnio przez przeskok (by nie liczyc ich do maxhit)
+        self._area_atk_logt = 0.0      # throttle czytelnej linii logu (co ~1 s; jsonl leci co paczke)
         self._area_atk_status = ""     # tekst stanu do panelu
         self._attack_ok = None         # czy wstrzyknieta DLL zna '!attack' (cache, jak _tpick_ok)
         self._attack_t = 0.0
@@ -3320,22 +3323,30 @@ class RadarMap:
                 targets.append((d, vid, x, y))
         # metiny: _iter_actors pomija vnum 8xxx, wiec dokladamy je z osobnej listy (maja VID) - bijemy
         # je tak samo (stojac obok = w zasiegu; dalekie przez przeskok). Normalny atak dziala na kamien.
+        metin_vids = set()
         for mx, my, mvid in self._metin_targets():
             if not mvid:
                 continue
             d = math.hypot(mx - hx, my - hy)
             if d <= self.area_atk_radius:
                 targets.append((d, mvid, mx, my))
-        # test zasiegu: VID atakowany wczesniej, a teraz nieobecny = padl/odszedl. Zapamietaj najdalszy.
+                metin_vids.add(mvid)
+        # test zasiegu: VID atakowany wczesniej, a teraz nieobecny = padl/odszedl. Dla KAZDEGO zgonu
+        # logujemy dystans i sposob (direct/hop). maxhit liczymy tylko z BEZPOSREDNICH (hop faluje zasieg)
+        # - to daje realny serwerowy zasieg ataku wprost z logow, bez odczytu z panelu.
         live = {t[1] for t in targets}
         for v in self._area_atk_prev - live:
             d0 = self._area_atk_dist.pop(v, None)
+            via = "hop" if v in self._area_atk_hopset else "direct"
+            self._area_atk_hopset.discard(v)
             if d0 is not None:
                 self.area_atk_gone += 1
-                if d0 > self._area_atk_maxhit:
+                if via == "direct" and d0 > self._area_atk_maxhit:
                     self._area_atk_maxhit = d0
-                    if self.area_atk_mode == "safe":
-                        self._dbg("atak: VID %d zniklo z d=%.0f (najdalszy skuteczny)", v, d0)
+                tr = self._tr()
+                if tr is not None:
+                    tr.rec("area_gone", vid=int(v), d=round(d0), via=via, maxhit=round(self._area_atk_maxhit))
+                self._dbg("atak ZGON vid=%d d=%.0f via=%s (maxhit direct=%.0f)", v, d0, via, self._area_atk_maxhit)
         self._area_atk_prev = live
         if not targets:
             self._area_atk_status = "brak mobow w promieniu %.0f" % self.area_atk_radius
@@ -3357,27 +3368,60 @@ class RadarMap:
             hop = False                                      # stara DLL bez !tattack - zachowaj sie zwyczajnie
         # ZAWSZE: bij wprost wszystko w promieniu (zabija to, co realnie w serwerowym zasiegu teraz;
         # dalsze serwer odrzuci - ale gdy aggruja i podejda, kolejny tick je dobije).
+        n_near = sum(1 for d, _v, _x, _y in targets if d <= ATTACK_SRV_REACH)
+        n_far = len(targets) - n_near
+        n_metin = sum(1 for _d, v, _x, _y in targets if v in metin_vids)
         vids = [v for _d, v, _x, _y in targets[:AREA_ATK_MAX]]
         if autopot.attack_vids(pid, vids, AREA_ATK_MOT):
             self.area_atk_count += 1
         hopped = 0
         hop_d = 0.0
+        hops = 0
         if hop:
-            # dalekie (poza serwerowym zasiegiem) dobij przez przeskok - jedno skupisko na krok;
-            # 'safe' throttle ATTACK_HOP_EVERY, 'aggro' co petle (szybciej czysci, bardziej wykrywalne).
+            # dalekie (poza serwerowym zasiegiem) dobij przez przeskok. 'safe': 1 skupisko co
+            # ATTACK_HOP_EVERY (ostroznie, do pomiaru). 'aggro': WIELE skupisk na tik (do ATTACK_HOP_MAX_AGGRO)
+            # - czysci caly obszar szybko, kosztem wielu skokow pozycji (bardziej wykrywalne).
             every_hop = ATTACK_HOP_EVERY if self.area_atk_mode == "safe" else 0.0
-            far = [(d, v, x, y) for d, v, x, y in targets if ATTACK_SRV_REACH < d <= ATTACK_TP_MAX]
+            max_hops = 1 if self.area_atk_mode == "safe" else ATTACK_HOP_MAX_AGGRO
+            far = sorted((d, v, x, y) for d, v, x, y in targets if ATTACK_SRV_REACH < d <= ATTACK_TP_MAX)
             if far and now - self._area_hop_next >= every_hop:
-                hd, _hv, cx, cy = far[0]                     # najblizsze skupisko (najpierw to, co blisko)
-                cluster = [v for d, v, x, y in far if math.hypot(x - cx, y - cy) <= ATTACK_SRV_REACH]
-                if autopot.tattack(pid, cx, cy, cluster[:AREA_ATK_MAX], AREA_ATK_MOT):
-                    hopped, hop_d = len(cluster), hd
-                    self._area_hop_next = now
+                used = set()
+                for d0, v0, cx, cy in far:                   # skupiska od najblizszego; kazdy mob raz
+                    if v0 in used:
+                        continue
+                    cluster = [v for d, v, x, y in far
+                               if v not in used and math.hypot(x - cx, y - cy) <= ATTACK_SRV_REACH]
+                    if not cluster:
+                        continue
+                    if autopot.tattack(pid, cx, cy, cluster[:AREA_ATK_MAX], AREA_ATK_MOT):
+                        used.update(cluster)
+                        self._area_atk_hopset.update(cluster)   # te zgony nie licz do maxhit direct
+                        hopped += len(cluster)
+                        hop_d = max(hop_d, d0)
+                        hops += 1
+                    if hops >= max_hops:
+                        break
+                self._area_hop_next = now
         self._area_atk_status = (
             "bije %d <=%.0f [%s]%s  zniklo:%d  max skuteczny:%.0f"
             % (len(vids), self.area_atk_radius, tryb,
-               ("  +przeskok %d@d%.0f" % (hopped, hop_d)) if hop else "",
+               ("  +przeskok %dx (%d mobow, max d%.0f)" % (hops, hopped, hop_d)) if hop else "",
                self.area_atk_gone, self._area_atk_maxhit))
+        # LOG: jsonl co paczke (pelny slad do wnioskow), czytelna linia co ~1 s (bez zalewania)
+        dn = [round(d) for d, _v, _x, _y in targets]
+        tr = self._tr()
+        if tr is not None:
+            tr.rec("area_atk", n=len(targets), near=n_near, far=n_far, metin=n_metin, hop=bool(hop),
+                   hops=hops, hopped=hopped, hop_d=round(hop_d), gone=self.area_atk_gone,
+                   maxhit=round(self._area_atk_maxhit), mode=self.area_atk_mode,
+                   radius=round(self.area_atk_radius), reach=round(ATTACK_SRV_REACH),
+                   dmin=dn[0], dmax=dn[-1], dists=dn[:40])
+        if now - self._area_atk_logt > 1.0:
+            self._area_atk_logt = now
+            self._dbg("atak: cele=%d near=%d far=%d metin=%d hop=%s hopped=%d gone=%d maxdir=%.0f "
+                      "d[%.0f..%.0f] reach=%.0f tryb=%s", len(targets), n_near, n_far, n_metin,
+                      hop, hopped, self.area_atk_gone, self._area_atk_maxhit, dn[0], dn[-1],
+                      ATTACK_SRV_REACH, self.area_atk_mode)
         self._area_atk_last = now
 
     def _cape_step(self):
