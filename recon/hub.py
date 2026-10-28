@@ -9,6 +9,8 @@ Uruchom z terminala JAKO ADMIN (start radaru = wstrzykniecie DLL, ukrywanie okna
 
 API (JSON):
   GET  /api/clients                         lista klientow + snapshot radaru (jesli dziala)
+  GET  /api/clients/<pid>/snapshot          snapshot jednej postaci z encjami i nakladkami (widok postaci)
+  GET  /maps/<mapa>.png                     obraz minimapy (tlo radaru w przegladarce)
   POST /api/clients/<pid>/command           {"name","value"} -> radar (jak klik w panelu)
   POST /api/clients/<pid>/radar/start       uruchom radar dla klienta (postac musi byc w swiecie)
   POST /api/clients/<pid>/radar/stop        zamknij radar (czysto, przez jego API)
@@ -39,6 +41,7 @@ RECON_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.normpath(os.path.join(RECON_DIR, ".."))
 WEB_DIR = os.path.join(ROOT_DIR, "web")
 FACES_DIR = os.path.join(ROOT_DIR, "data", "faces")
+MAPS_DIR = os.path.join(ROOT_DIR, "data", "maps")     # cache minimap budowany przez radar (map_assets.py)
 LOGS_DIR = os.path.join(ROOT_DIR, "logs")
 DEFAULT_PORT = 8765
 WORKER_TIMEOUT = 1.5       # s: snapshot z radaru (wolny radar nie blokuje calej listy)
@@ -141,6 +144,13 @@ class Hub:
                 return exe
         raise LookupError("klient o PID %d nie dziala" % pid)
 
+    def snapshot(self, pid):
+        """Pelny snapshot jednej postaci (z encjami i nakladkami) - widok postaci odpytuje go kilka razy/s."""
+        w = read_worker(pid)
+        if w is None:
+            raise LookupError("radar dla PID %d nie dziala" % pid)
+        return worker_call(w, "/api/snapshot?entities=1")
+
     def command(self, pid, body):
         self._game(pid)
         w = read_worker(pid)
@@ -215,6 +225,7 @@ def make_handler(hub, port):
             if ctype.startswith("text/") or ctype.endswith("javascript"):
                 ctype += "; charset=utf-8"
             self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-cache")   # po zmianie app.js przegladarka nie trzyma starego
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -235,8 +246,18 @@ def make_handler(hub, port):
                 self._file(WEB_DIR, p[len("/static/"):])
             elif p.startswith("/faces/"):
                 self._file(FACES_DIR, p[len("/faces/"):])
+            elif p.startswith("/maps/") and p.endswith(".png"):
+                self._file(MAPS_DIR, p[len("/maps/"):])
             elif p == "/api/clients":
                 self._send(200, {"clients": hub.list(), "t": time.time()})
+            elif p.startswith("/api/clients/") and p.endswith("/snapshot"):
+                try:
+                    code, res = hub.snapshot(int(p.split("/")[3]))
+                except (LookupError, ValueError) as e:
+                    code, res = 404, {"error": str(e)}
+                except OSError as e:
+                    code, res = 503, {"error": "radar nie odpowiada: %s" % e}
+                self._send(code, res)
             else:
                 self._send(404, {"error": "nie ma %s" % p})
 

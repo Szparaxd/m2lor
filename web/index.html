@@ -10,23 +10,69 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <header class="top">
-    <div>
-      <h1>Postacie</h1>
-      <p class="summary" id="summary">Łączę z hubem…</p>
-    </div>
-    <button class="btn btn-gold" id="launch" type="button">Uruchom nowego klienta</button>
-  </header>
-
   <p class="notice" id="notice" role="status" hidden></p>
 
-  <main id="roster" class="roster" aria-live="polite"></main>
+  <!-- widok 1: lista postaci -->
+  <section id="view-list">
+    <header class="top">
+      <div>
+        <h1>Postacie</h1>
+        <p class="summary" id="summary">Łączę z hubem…</p>
+      </div>
+      <button class="btn btn-gold" id="launch" type="button">Uruchom nowego klienta</button>
+    </header>
+    <main id="roster" class="roster" aria-live="polite"></main>
+  </section>
+
+  <!-- widok 2: jedna postać (radar + wszystkie opcje) -->
+  <section id="view-detail" class="detail" hidden>
+    <a class="back" href="#/">Wszystkie postacie</a>
+    <header class="detail-head">
+      <div class="portrait"><img alt=""></div>
+      <div class="who">
+        <h1 class="nick"></h1>
+        <p class="meta"></p>
+        <div class="bars">
+          <div class="bar bar-hp"><span class="fill"></span><span class="num"></span></div>
+          <div class="bar bar-sp"><span class="fill"></span><span class="num"></span></div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-quiet act-window" type="button"></button>
+        <button class="btn act-radar" type="button"></button>
+      </div>
+    </header>
+    <div class="detail-body">
+      <figure class="radar">
+        <canvas id="radar-canvas" aria-label="Radar: mapa z postacią na środku"></canvas>
+        <figcaption class="radar-bar">
+          <ul class="legend">
+            <li><i class="k-mob"></i>potwór</li>
+            <li><i class="k-boss"></i>boss</li>
+            <li><i class="k-special"></i>specjalny</li>
+            <li><i class="k-metin"></i>metin</li>
+            <li><i class="k-player"></i>gracz</li>
+            <li><i class="k-npc"></i>NPC</li>
+          </ul>
+          <div class="zoom">
+            <button class="btn btn-quiet" id="zoom-out" type="button" aria-label="Oddal">−</button>
+            <button class="btn btn-quiet" id="zoom-in" type="button" aria-label="Przybliż">+</button>
+          </div>
+        </figcaption>
+        <p class="radar-status" id="radar-status"></p>
+      </figure>
+      <section class="controls">
+        <div class="tabs" role="tablist" aria-label="Funkcje bota"></div>
+        <div class="tabpanel" role="tabpanel"></div>
+      </section>
+    </div>
+  </section>
 
   <template id="tpl-plaque">
     <article class="plaque">
       <div class="portrait"><img alt=""></div>
       <div class="who">
-        <h2 class="nick"></h2>
+        <h2 class="nick"><a class="open"></a></h2>
         <p class="meta"></p>
         <div class="bars">
           <div class="bar bar-hp"><span class="fill"></span><span class="num"></span></div>

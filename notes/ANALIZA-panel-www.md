@@ -121,3 +121,14 @@ dwa klienty naraz.
 - Test na żywo OK (Tester3): start radaru z panelu, Loot wł./wył., ukrycie i pokazanie okna gry (radar dalej
   czyta HP), zamknięcie i ponowne uruchomienie radaru, widok mobilny. NIE testowane: „Uruchom nowego klienta”
   z panelu (ta sama ścieżka co `launch.py --new`, sprawdzona wcześniej z konsoli).
+
+**W4 — widok postaci (2026-10-28)**, `#/p/<pid>` (nick na liście jest linkiem):
+- Radar na `<canvas>`: tło = `data/maps/<mapa>.png` z huba (`/maps/…`, px = świat/100), encje kolorami rodzajów,
+  metiny jako kwadraty, waypointy trasy (bieżący jaśniejszy), trasa A*, okrąg farmy, pierścień celu walki; zoom
+  przyciskami i kółkiem. Odświeżanie ~4×/s (`GET /api/clients/<pid>/snapshot`, bez piętrzenia zapytań).
+- Zakładki opcji (Mikstura, Loot, Farma, Chodzenie, Buffy, Speedhack) generowane z `options` radaru: przełączniki,
+  suwaki (wysyłka po puszczeniu; zależne suwaki aktualizowane z odpowiedzi), rozmiary mikstur, buffy z listy radaru.
+- botapi: `overlay` w snapshocie z encjami + opcja `loot_radius` (z pracy drugiej sesji, gdy istnieje).
+- hub: `Cache-Control: no-cache` dla plików strony (inaczej po zmianie app.js przeglądarka trzymała stary).
+- Test na żywo OK (Tester3): mapa i encje zgodne z pozycją, suwak klawiaturą (pot_cd 0.30→0.35→0.30 w radarze),
+  zakładki, zoom, powrót do listy. NIE testowane: klikanie po mapie (dodawanie waypointów) — nie ma jeszcze tej funkcji.

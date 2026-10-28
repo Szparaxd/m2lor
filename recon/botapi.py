@@ -38,6 +38,7 @@ OPTIONS = {
     "pot_cd":        (float, "pot_cd",        "cd_var",            "_on_cd",             (0.1, 1.0)),
     "autoloot":      (bool,  "autoloot_on",   "autoloot_var",      "_on_autoloot_check", None),
     "loot_interval": (float, "loot_interval", "loot_var",          "_on_loot_cd",        (0.2, 2.0)),
+    "loot_radius":   (int,   "loot_radius",   "loot_radius_var",   "_on_loot_radius",    (300, 4000)),
     "autowalk":      (bool,  "autowalk_on",   "autowalk_var",      "_on_autowalk_check", None),
     "walk_fight":    (bool,  "walk_fight",    "walkfight_var",     "_on_walkfight",      None),
     "farm":          (bool,  "farm_on",       "farm_var",          "_on_farm_check",     None),
@@ -52,7 +53,8 @@ OPTIONS = {
     "atk_mult":      (float, "atk_mult",      "atkx_var",          "_on_atkx",           (1.0, 3.0)),
     "autobuff":      (bool,  "autobuff.on",   "autobuff_var",      "_on_autobuff_check", None),
 }
-_SLIDER_HANDLERS = {"_on_low", "_on_high", "_on_cd", "_on_loot_cd", "_on_farmr", "_on_movx", "_on_atkx"}
+_SLIDER_HANDLERS = {"_on_low", "_on_high", "_on_cd", "_on_loot_cd", "_on_loot_radius", "_on_farmr", "_on_movx",
+                    "_on_atkx"}
 
 
 def _get(obj, dotted):
@@ -118,7 +120,25 @@ class BotApi:
         }
         if entities and hx is not None:
             snap["entities"] = self.entities(hx, hy)
+            snap["overlay"] = self.overlay()
         return snap
+
+    def overlay(self):
+        """Co radar rysuje poza encjami: waypointy, biezaca trasa A*, okrag farmy, cel walki."""
+        r = self.r
+
+        def pts(seq):
+            return [[round(x), round(y)] for x, y in (seq or [])]
+        fc = getattr(r, "farm_center", None)
+        tgt = getattr(r, "_combat_target", None)
+        return {
+            "path": pts(getattr(r, "path", None)),
+            "walk_idx": getattr(r, "walk_idx", 0),
+            "route": pts(getattr(r, "_route", None)) or pts(getattr(r, "_eng_route", None)),
+            "farm": {"x": round(fc[0]), "y": round(fc[1]), "r": round(r.farm_radius)}
+                    if getattr(r, "farm_on", False) and fc else None,
+            "target": {"x": round(tgt[0]), "y": round(tgt[1]), "melee": bool(tgt[2])} if tgt else None,
+        }
 
     def entities(self, hx, hy, radius=ENTITY_R):
         """[{x, y, kind, vnum, vid}] aktorow (bez wlasnej postaci) + metiny z efektow, w promieniu."""
