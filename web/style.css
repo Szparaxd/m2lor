@@ -1,22 +1,21 @@
-/* Panel bota: lakierowane drewno + zloto ramek portretow z gry + jadeit dla wlaczonych funkcji.
-   Uklad aplikacji: szyna po lewej (sekcje + postacie w grze), scena po prawej. */
+/* Centrum kont: prosta nawigacja, czytelne karty i zlota glowna akcja. */
 :root {
-  --lacquer: #1d1714;      /* tlo sceny */
-  --lacquer-deep: #17120f; /* szyna, pola formularzy */
-  --wood: #29201b;         /* karty / tabliczki */
-  --wood-edge: #3a2d25;
-  --wood-hover: #47372d;
-  --gold: #c9a45c;         /* ramki portretow, glowna akcja */
+  --lacquer: #1c1a17;
+  --lacquer-deep: #171613;
+  --wood: #27241f;
+  --wood-edge: #443d32;
+  --wood-hover: #39342b;
+  --gold: #e1bd76;
   --gold-dim: #8a7243;
   --jade: #5fa38a;         /* funkcja wlaczona, stan ok */
   --cinnabar: #c4422e;     /* HP */
   --azure: #3b6db3;        /* PM */
-  --ink: #efe6d8;          /* tekst */
-  --ink-dim: #a8998a;
+  --ink: #f2ede3;
+  --ink-dim: #b5aea1;
   --danger: #e0775f;
   --radius-card: 10px;
-  --radius-control: 999px;
-  --rail-w: 248px;
+  --radius-control: 7px;
+  --rail-w: 210px;
 }
 
 * { box-sizing: border-box; }
@@ -26,7 +25,7 @@ body {
   margin: 0;
   background: var(--lacquer);
   color: var(--ink);
-  font: 15px/1.5 "IBM Plex Sans", system-ui, sans-serif;
+  font: 15px/1.5 "Segoe UI", system-ui, sans-serif;
 }
 
 a { color: var(--gold); }
@@ -478,6 +477,63 @@ input:focus, select:focus, textarea:focus { border-color: var(--gold-dim); outli
 .facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; margin: 14px 0 0; font-size: 14px; }
 .facts dt { color: var(--ink-dim); }
 .facts dd { margin: 0; }
+
+/* Panel oparty na kontach, zgodny z zaakceptowana makieta. */
+.brand-name { font-family: Georgia, serif; }
+h1 { font-family: "Segoe UI", system-ui, sans-serif; font-weight: 600; letter-spacing: -.6px; }
+.accounts-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; align-items: start; }
+.accounts-layout:has(.account-editor:not([hidden])) { grid-template-columns: minmax(0, 1fr) minmax(300px, 360px); }
+.accounts-main, .account-editor { min-width: 0; }
+.account-grid { grid-template-columns: 1fr; }
+.account-steps { display: flex; flex-wrap: wrap; gap: 10px 32px; list-style-position: inside; color: var(--ink-dim); margin: 0 0 26px; padding: 14px 0; border-block: 1px solid var(--wood-edge); font-size: 13px; }
+.account-steps li::marker { color: var(--gold); font-weight: 600; }
+.account-section-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 14px; }
+.account-section-head h2 { font: 600 17px/1.4 "Segoe UI", system-ui, sans-serif; margin: 0; }
+.account-section-head .hint { margin: 0; }
+.account-head { align-items: flex-start; }
+.account-head > div { min-width: 0; }
+.account-name { font: 600 19px/1.4 "Segoe UI", system-ui, sans-serif; margin: 0; overflow-wrap: anywhere; }
+.account-meta { font-size: 13px; color: var(--ink-dim); margin: 5px 0 0; overflow-wrap: anywhere; }
+.account .al-state { margin-left: 0; font-size: 13px; }
+.account-bot { margin: 10px 0 0; }
+.account-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.account-actions .btn { font-size: 13px; }
+.account-more { margin-top: 15px; font-size: 12px; color: var(--ink-dim); }
+.account-more summary { cursor: pointer; width: fit-content; }
+.account-extra { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.account-extra .btn { font-size: 12px; }
+.account-running-note { margin: 12px 0 0; }
+.account-health { border: 1px solid var(--gold-dim); border-radius: 8px; background: var(--wood); padding: 14px 18px; margin-bottom: 20px; font-size: 14px; }
+.account-health p { margin: 0 0 7px; }
+.account-error, .account-problem { color: var(--danger); font-size: 13px; overflow-wrap: anywhere; }
+.account-problem { margin: 14px 0 0; }
+.login-progress { list-style: none; counter-reset: step; display: flex; flex-wrap: wrap; gap: 8px 18px; padding: 0; margin: 18px 0 0; font-size: 12px; color: var(--ink-dim); }
+.login-progress li { counter-increment: step; }
+.login-progress li::before { content: counter(step) " "; }
+.login-progress li[data-step="done"] { color: #a9d6c4; }
+.login-progress li[data-step="done"]::before { content: "✓ "; }
+.login-progress li[data-step="current"] { color: var(--gold); font-weight: 600; }
+.account-fields-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.account-editor .field { font-size: 13px; }
+.account-editor input, .account-editor select { min-width: 0; width: 100%; }
+.password-field { display: flex; gap: 8px; }
+.password-field input { flex: 1; }
+.password-field .btn { padding-inline: 10px; }
+.account-preferences { display: grid; gap: 14px; border-block: 1px solid var(--wood-edge); padding-block: 18px; margin-top: 20px; }
+.account-preferences .check { align-items: flex-start; font-size: 13px; }
+.account-preferences input { width: auto; margin-top: 4px; }
+.account-editor .form-actions { justify-content: flex-start; flex-wrap: wrap; }
+.account-editor .form-actions .btn { font-size: 13px; }
+#account-save-launch { order: -1; }
+.manual-launch { padding-top: 4px; }
+.manual-launch .hint { font-size: 12px; margin-top: 8px; }
+.account-grid .empty { padding: 35px 20px; text-align: left; background: var(--wood); }
+.account-grid .empty strong { font: 600 20px/1.4 "Segoe UI", system-ui, sans-serif; }
+.account-grid .empty p { margin: 10px 0 20px; }
+.profile-link { grid-area: al; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.back-link { margin-top: 0; font-size: 14px; }
+@media (max-width: 1200px) { .accounts-layout:has(.account-editor:not([hidden])) { grid-template-columns: 1fr; } }
+@media (max-width: 480px) { .account-steps { display: grid; gap: 8px; } .card.account, .account-editor { padding: 16px; } .account-actions .btn { max-width: 100%; white-space: normal; } }
 
 /* ================= Ustawienia ================= */
 .settings { display: grid; gap: 16px; max-width: 900px; }

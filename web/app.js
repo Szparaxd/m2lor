@@ -1,8 +1,8 @@
 // Panel bota (recon/hub.py) – cała obsługa bota w przeglądarce, bez okien radaru.
 // Widoki (hash):
-//   #/            Postacie: wszystkie klienty gry (tabliczki jak lewa kolumna m2bob),
+//   #/postacie    Postacie: wszystkie klienty gry (tabliczki jak lewa kolumna m2bob),
 //   #/p/<pid>     jedna postać: radar na canvasie + wszystkie funkcje + narzędzia radaru,
-//   #/konta       profile autologowania,
+//   #/            Moje konta: zapis, edycja i uruchamianie; #/konta to zgodny alias,
 //   #/ustawienia  ścieżka gry, tryb radaru, pliki konfiguracji (vnum mikstur, peleryn, lista potworów),
 //   #/dziennik    logi radarów / uruchamiania / logowania.
 // Lista klientów jest odpytywana raz na sekundę dla wszystkich widoków (szyna po lewej też z niej korzysta).
@@ -183,6 +183,8 @@ function wireActions(root, getPid, afterChange) {
     const starting = btn.dataset.state !== "on";
     btn.disabled = true;
     try {
+      const profile = hub.clients.find(c => c.pid === getPid())?.autologin;
+      if (profile) await post(`/api/autologin/${profile.id}/save`, {radar:starting});
       await post(`/api/clients/${getPid()}/radar/${starting ? "start" : "stop"}`);
       await afterChange();
     } catch (e) {
@@ -265,7 +267,11 @@ const listView = {
     p.dataset.pid = pid;
     $(".open", p).href = `#/p/${pid}`;
     wireActions(p, () => pid, () => hub.refresh().then(() => this.render()));
-    wireAutologin(p, pid, () => hub.refresh().then(() => this.render()));
+    $(".edit-account", p).addEventListener("click", () => {
+      const c = hub.clients.find((c) => c.pid === pid);
+      location.hash = "#/";
+      accountsView.openEditor(c && c.autologin, pid);
+    });
     return p;
   },
 
@@ -301,7 +307,8 @@ const listView = {
     p.classList.toggle("is-off", c.radar !== "on");
     renderIdentity(p, c, s, $(".open", p));
     this.renderSwitches(p, c.pid, s ? s.options : null);
-    renderAutologin(p, c.autologin);
+    $(".edit-account", p).textContent = c.autologin ? "Edytuj konto i logowanie" : "Dodaj konto do tego klienta";
+    $(".al-state", p).textContent = c.autologin ? c.autologin.status.text : "Logowanie ręczne";
     const foot = $(".foot", p);
     const parts = [`${c.exe}, PID ${c.pid}.`, `Bot ${RADAR_STATE[c.radar] || c.radar}.`];
     if (s && s.status) {
@@ -324,7 +331,7 @@ const listView = {
       if (!$(".empty", this.roster)) {
         this.roster.replaceChildren();
         const d = el("div", "empty");
-        d.innerHTML = "<strong>Żaden klient gry nie działa</strong>Uruchom nowego klienta. Po zalogowaniu bot wystartuje sam, bez żadnego okna.";
+        d.innerHTML = "<strong>Żaden klient gry nie działa</strong>Dodaj konto w „Moich kontach” i kliknij „Uruchom i zaloguj”.";
         this.roster.append(d);
       }
       return;
@@ -343,137 +350,20 @@ const listView = {
   },
 };
 
-/* ---- autologowanie na tabliczce klienta ---- */
-function wireAutologin(p, pid, afterChange) {
-  const form = $(".al-form", p);
-  form.addEventListener("input", () => { form.dataset.dirty = "1"; });
-  form.addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    const f = form.elements;
-    const btn = $("button[type=submit]", form);
-    btn.disabled = true;
-    try {
-      await post(`/api/clients/${pid}/autologin`, {
-        login: f.login.value, password: f.password.value,
-        channel: Number(f.channel.value), slot: Number(f.slot.value),
-        enabled: f.enabled.checked, restart: f.restart.checked, radar: f.radar.checked,
-      });
-      f.password.value = "";
-      delete form.dataset.dirty;
-      form.dataset.key = "";
-      showNotice(f.enabled.checked ? "Zapisano. Bot zaloguje klienta sam." : "Zapisano (autologowanie wyłączone).", "ok");
-      await afterChange();
-    } catch (e) { showNotice(`Autologowanie: ${e.message}`); }
-    btn.disabled = false;
-  });
-  $(".al-relog", form).addEventListener("click", async (ev) => {
-    const btn = ev.currentTarget;
-    btn.disabled = true;
-    try {
-      await post(`/api/clients/${pid}/relog`);
-      showNotice("Wylogowuję. Bot zaloguje postać od nowa na ustawiony kanał.", "ok");
-    } catch (e) { showNotice(`Przelogowanie: ${e.message}`); }
-    btn.disabled = false;
-  });
-}
-
-function alTone(al) {
-  return !al || !al.enabled ? "" : AL_STATE_OK.has(al.status.state) ? "ok" : AL_STATE_BAD.has(al.status.state) ? "bad" : "busy";
-}
-
-function renderAutologin(p, al) {
-  const state = $(".al-state", p);
-  state.textContent = al ? (al.enabled ? al.status.text : "wyłączone") : "nie ustawione";
-  state.dataset.tone = alTone(al);
-  const form = $(".al-form", p);
-  $(".al-relog", form).hidden = !(al && al.enabled);
-  const key = JSON.stringify(al ? [al.id, al.login, al.channel, al.slot, al.enabled, al.restart, al.radar, al.has_password] : null);
-  if (form.dataset.dirty || form.dataset.key === key) return;   // nie nadpisuj tego, co użytkownik właśnie wpisuje
-  form.dataset.key = key;
-  const f = form.elements;
-  f.login.value = al ? al.login : "";
-  f.password.placeholder = al && al.has_password ? "zapisane – zostaw puste" : "";
-  f.channel.value = String(al ? al.channel : 1);
-  f.slot.value = String(al ? al.slot : 0);
-  f.enabled.checked = al ? al.enabled : true;
-  f.restart.checked = !!(al && al.restart);
-  f.radar.checked = al ? !!al.radar : true;
-}
-
 $("#launch").addEventListener("click", async (ev) => {
   const btn = ev.currentTarget;
+  if (!accountsView.ready()) { showNotice("Sprawdź gotowość gry w Moich kontach."); return; }
+  btn.dataset.busy = "true";
   btn.disabled = true;
   try {
     await post("/api/launch");
     showNotice("Uruchamiam nowego klienta. Zaloguj się w oknie gry, bot wystartuje sam po wejściu do świata.", "ok");
   } catch (e) { showNotice(`Nowy klient: ${e.message}`); }
-  setTimeout(() => { btn.disabled = false; }, 5000);
+  setTimeout(() => { delete btn.dataset.busy; accountsView.renderHealth(); }, 5000);
 });
 
 /* ======================= Konta ======================= */
-const accountsView = {
-  root: $("#view-accounts"),
-  box: $("#account-list"),
-
-  async refresh() {
-    let profiles;
-    try { profiles = (await getJSON("/api/autologin")).profiles; } catch { return; }
-    const running = new Set(hub.clients.map((c) => c.pid));
-    const key = JSON.stringify(profiles.map((p) => [p.id, p.login, p.channel, p.slot, p.enabled, p.restart, p.radar, p.pid,
-      running.has(p.pid), p.status && p.status.text]));
-    if (this.box.dataset.key === key) return;
-    this.box.dataset.key = key;
-    this.box.replaceChildren();
-    if (!profiles.length) {
-      const d = el("div", "empty");
-      d.innerHTML = "<strong>Brak zapisanych kont</strong>Uruchom klienta, otwórz jego kartę w Postaciach i wypełnij „Autologowanie”.";
-      this.box.append(d);
-      return;
-    }
-    for (const p of profiles) {
-      const alive = running.has(p.pid);
-      const card = el("article", "card account");
-      const head = el("div", "account-head");
-      head.append(el("h2", null, p.login));
-      const st = el("span", "al-state", p.enabled ? (p.status ? p.status.text : "czeka") : "wyłączone");
-      st.dataset.tone = alTone(p);
-      head.append(st);
-      const facts = el("dl", "facts");
-      for (const [k, v] of [["Kanał", `CH${p.channel}`], ["Postać", `slot ${p.slot + 1}`],
-        ["Klient", alive ? `działa (PID ${p.pid})` : "nie działa"],
-        ["Po zamknięciu", p.restart ? "uruchom ponownie" : "nic nie rób"], ["Bot po wejściu", p.radar ? "tak" : "nie"]]) {
-        facts.append(el("dt", null, k), el("dd", null, v));
-      }
-      const acts = el("div", "form-actions");
-      if (alive) {
-        const open = el("a", "btn btn-quiet", "Otwórz postać");
-        open.href = `#/p/${p.pid}`;
-        acts.append(open);
-      } else {
-        const run = el("button", "btn btn-gold", "Uruchom klienta i zaloguj");
-        run.type = "button";
-        run.addEventListener("click", async () => {
-          run.disabled = true;
-          try {
-            await post(`/api/autologin/${p.id}/launch`);
-            showNotice(`Uruchamiam klienta dla konta ${p.login}. Zaloguje się samo.`, "ok");
-          } catch (e) { showNotice(`Uruchomienie: ${e.message}`); run.disabled = false; }
-        });
-        acts.append(run);
-      }
-      const del = el("button", "btn btn-danger", "Usuń konto");
-      del.type = "button";
-      del.addEventListener("click", async () => {
-        if (!confirm(`Usunąć zapisane konto ${p.login} (z hasłem)?`)) return;
-        try { await post(`/api/autologin/${p.id}/remove`); this.box.dataset.key = ""; this.refresh(); }
-        catch (e) { showNotice(`Usuń: ${e.message}`); }
-      });
-      acts.append(del);
-      card.append(head, facts, acts);
-      this.box.append(card);
-    }
-  },
-};
+const accountsView = createAccountsView();
 
 /* ======================= Ustawienia ======================= */
 const settingsView = {
@@ -505,7 +395,7 @@ const settingsView = {
     note.dataset.tone = cfg.game_found ? "ok" : "bad";
     const adm = $("#admin-state");
     adm.textContent = cfg.admin
-      ? "Panel działa jako administrator – bot może wstrzyknąć DLL i czytać pamięć gry."
+      ? "Panel gotowy — uruchamianie i logowanie są dostępne."
       : "Panel działa BEZ uprawnień administratora – bot nie wstrzyknie DLL. Zamknij go i uruchom panel.bat.";
     adm.dataset.tone = cfg.admin ? "ok" : "bad";
   },
@@ -1121,13 +1011,13 @@ new ResizeObserver(() => detailView.draw()).observe(detailView.canvas);
 
 /* ======================= routing + odpytywanie ======================= */
 const VIEWS = { list: listView, detail: detailView, accounts: accountsView, settings: settingsView, logs: logsView };
-const ROUTES = { "#/konta": "accounts", "#/ustawienia": "settings", "#/dziennik": "logs" };
-const TITLES = { list: "Postacie", accounts: "Konta i logowanie", settings: "Ustawienia", logs: "Dziennik" };
+const ROUTES = { "#/": "accounts", "#/postacie": "list", "#/konta": "accounts", "#/ustawienia": "settings", "#/dziennik": "logs" };
+const TITLES = { list: "Postacie w grze", accounts: "Moje konta", settings: "Ustawienia gry", logs: "Dziennik zdarzeń" };
 let current = null;
 
 function route() {
   const m = location.hash.match(/^#\/p\/(\d+)$/);
-  current = m ? "detail" : ROUTES[location.hash] || "list";
+  current = m ? "detail" : ROUTES[location.hash] || "accounts";
   for (const [name, v] of Object.entries(VIEWS)) v.root.hidden = name !== current;
   for (const a of document.querySelectorAll(".nav a")) {
     a.setAttribute("aria-current", String(a.dataset.view === current));
@@ -1139,6 +1029,8 @@ function route() {
     detailView.pid = null;
     document.title = `${TITLES[current]} – panel bota`;
   }
+  if (current !== "accounts") accountsView.closeEditor(false);
+  else accountsView.configAt = 0;
   tick();
   if (current === "settings") settingsView.open();
   if (current === "logs") logsView.refresh(true);

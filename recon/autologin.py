@@ -272,6 +272,7 @@ def channel_of(server_info):
 def public(p):
     """Profil bez hasla - to idzie do przegladarki."""
     d = {k: p.get(k) for k in ("id", "login", "channel", "slot", "enabled", "restart", "radar", "pid")}
+    d["nickname"] = p.get("nickname") or p.get("login", "")
     d["has_password"] = bool(p.get("pwd"))
     return d
 
@@ -321,37 +322,85 @@ class Manager:
             return dict(public(p), status=self._st(p)["status"]) if p else None
 
     def configure(self, pid, body):
-        """Ustaw/zmien konto dla klienta (PID). Puste haslo = zostaw zapisane."""
-        login = str(body.get("login", "")).strip()
-        channel, slot = int(body.get("channel", 1)), int(body.get("slot", 0))
-        if not login:
-            raise ValueError("podaj login konta")
-        if channel not in CHANNELS:
-            raise ValueError("kanal musi byc 1-4")
-        if slot not in SLOTS:
-            raise ValueError("postac musi byc 1-4")
+        """Zgodny adapter dla konfiguracji konta na dzialajacym kliencie."""
+        if not isinstance(body, dict) or ("login" in body and not isinstance(body["login"], str)):
+            raise ValueError("nieprawidlowe dane konta")
         with self._lock:
             p = self._find(pid=pid)
-            if p is None:                 # to samo konto bylo przypiete do innego (martwego) klienta?
-                p = next((q for q in self._profiles if q["login"] == login and q["slot"] == slot), None)
             if p is None:
-                p = {"id": secrets.token_hex(4), "login": login}
-                self._profiles.append(p)
-            for q in self._profiles:      # jeden profil na klienta
-                if q is not p and q.get("pid") == pid:
-                    q["pid"] = None
+                try:
+                    slot = int(body.get("slot", 0))
+                except (ValueError, TypeError):
+                    raise ValueError("postac musi byc 1-4") from None
+                p = next((q for q in self._profiles if q["login"] == body.get("login", "").strip()
+                          and q["slot"] == slot), None)
+            return self.save_profile(body, p["id"] if p else None, pid=pid)
+
+    def save_profile(self, body, profile_id=None, pid=None):
+        """Zapis bez uruchomionej gry. Puste haslo zachowuje haslo tego samego loginu."""
+        if not isinstance(body, dict):
+            raise ValueError("nieprawidlowe dane konta")
+        with self._lock:
+            p = self._find(id_=profile_id) if profile_id else None
+            if profile_id and p is None:
+                raise LookupError("brak zapisanego konta")
+            updated = dict(p or {"id": secrets.token_hex(4), "pid": None,
+                                 "enabled": True, "restart": False, "radar": True, "channel": 1, "slot": 0})
+            for key in ("login", "nickname", "password"):
+                if key in body and not isinstance(body[key], str):
+                    raise ValueError("%s: podaj tekst" % key)
+            login = body.get("login", updated.get("login", "")).strip()
+            if not login:
+                raise ValueError("podaj login konta")
+            if len(login) > 64 or len(body.get("nickname", "")) > 80:
+                raise ValueError("login lub nazwa konta sa za dlugie")
+            for key, choices in (("channel", CHANNELS), ("slot", SLOTS)):
+                value = body.get(key, updated[key])
+                if isinstance(value, bool) or not isinstance(value, (int, str)):
+                    raise ValueError("kanal i postac musza byc liczbami 1-4")
+                try:
+                    value = int(value)
+                except ValueError:
+                    raise ValueError("kanal i postac musza byc liczbami 1-4") from None
+                if value not in choices:
+                    raise ValueError("kanal lub postac poza zakresem 1-4")
+                updated[key] = value
+            for key in ("enabled", "restart", "radar"):
+                if key in body:
+                    if type(body[key]) is not bool:
+                        raise ValueError("%s: wybierz tak lub nie" % key)
+                    updated[key] = body[key]
             if body.get("password"):
-                p["pwd"] = protect(str(body["password"]))
-            elif p.get("login") != login:
-                p.pop("pwd", None)        # inne konto - stare haslo nie pasuje
-            if not p.get("pwd"):
-                raise ValueError("podaj haslo konta")
-            p.update(login=login, channel=channel, slot=slot, pid=pid, enabled=bool(body.get("enabled", True)),
-                     restart=bool(body.get("restart", False)), radar=bool(body.get("radar", False)))
-            self._state.pop(p["id"], None)          # nowe ustawienia = nowe proby (np. po zlym hasle)
-            self._save()
-            self._log("[autologin] profil %s: klient PID %d, CH%d, postac %d, %s"
-                      % (p["id"], pid, channel, slot + 1, "wlaczony" if p["enabled"] else "wylaczony"))
+                updated["pwd"] = protect(body["password"])
+            elif updated.get("login") != login or not updated.get("pwd"):
+                raise ValueError("podaj haslo konta (takze po zmianie loginu)")
+            updated["login"] = login
+            updated["nickname"] = body.get("nickname", updated.get("nickname", "")).strip()
+            if pid is not None:
+                updated["pid"] = pid
+            if any(q is not p and q["login"] == login and q["slot"] == updated["slot"] for q in self._profiles):
+                raise ValueError("to konto i postac sa juz zapisane - edytuj istniejacy profil")
+            old_profiles = [(q, dict(q)) for q in self._profiles]
+            if p is None:
+                p = updated
+                self._profiles.append(p)
+            else:
+                p.update(updated)
+            if pid is not None:
+                for q in self._profiles:
+                    if q is not p and q.get("pid") == pid:
+                        q["pid"] = None
+            try:
+                self._save()
+            except OSError:
+                self._profiles = [q for q, _ in old_profiles]
+                for q, old in old_profiles:
+                    q.clear()
+                    q.update(old)
+                raise
+            self._state.pop(p["id"], None)
+            self._log("[autologin] zapisano profil %s (PID %s), CH%d, postac %d"
+                      % (p["id"], p.get("pid"), p["channel"], p["slot"] + 1))
             return public(p)
 
     def set_enabled(self, pid_or_id, enabled):
@@ -394,8 +443,17 @@ class Manager:
             if p is None:
                 raise LookupError("brak profilu autologowania")
             st = self._st(p)
+            if st.get("want_launch") or st["status"]["state"] == "launch":
+                return {"ok": True}
+            alive = {pid for pid, _ in clients.list_clients(("GameCoreTop.exe",))}
+            running = p.get("pid") in alive
+            if not running and not os.path.isfile(settings.game_path()):
+                raise ValueError("Nie ma pliku gry. Popraw sciezke w Ustawieniach gry.")
+            st.clear()                       # ponow takze po WRONGPWD na istniejacym kliencie
             p["enabled"] = True
-            st["want_launch"] = True
+            if not running:
+                st["want_launch"] = True
+            self._status(p, "wait" if running else "launch", "ponawiam logowanie" if running else "uruchamiam gre")
             self._save()
         return {"ok": True}
 
@@ -434,8 +492,10 @@ class Manager:
     def _step(self, p, alive):
         st, now, pid = self._st(p), time.time(), p.get("pid")
         if pid not in alive:
-            if p.get("restart") or st.pop("want_launch", False):
-                if now - st.get("launched", 0) > RESTART_COOLDOWN:
+            manual = st.get("want_launch", False)
+            if manual or (p.get("restart") and (pid is not None or st.get("launched"))):
+                if manual or now - st.get("launched", 0) > RESTART_COOLDOWN:
+                    st.pop("want_launch", None)
                     self._status(p, "launch", "uruchamiam klienta gry")
                     new = self._launch_client(alive)
                     st["launched"] = time.time()
@@ -448,8 +508,8 @@ class Manager:
                         self._status(p, "wait", "nowy klient PID %d - czekam na ekran logowania" % new)
                     else:
                         self._status(p, "error", "nowy klient nie wystartowal")
-            else:
-                self._status(p, "off", "klient zamkniety (wlacz restart albo uruchom recznie)")
+            elif st["status"]["state"] != "error":
+                self._status(p, "off", "Gra jest wylaczona. Kliknij Uruchom i zaloguj.")
             return
         if not autopot.dll_loaded(pid):
             st.setdefault("seen", now)
@@ -528,6 +588,8 @@ class Manager:
         game = settings.game_path()
         if not os.path.isfile(game):
             return None
+        # Inny profil mogl juz wystartowac w tej samej iteracji _run; PID nie rosna monotonicznie.
+        alive = {pid for pid, _ in clients.list_clients(("GameCoreTop.exe",))}
         subprocess.Popen([game], cwd=os.path.dirname(game))
         t0 = time.time()
         while time.time() - t0 < NEW_PID_TIMEOUT and not self._stop.is_set():

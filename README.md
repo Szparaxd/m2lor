@@ -40,11 +40,21 @@ indziej, popraw je przed uruchomieniem.
 ## Uruchomienie (panel w przeglądarce)
 
 Po zbudowaniu DLL (niżej) wystarczy dwuklik w **`panel.bat`**: prosi o uprawnienia administratora,
-uruchamia hub (`recon/hub.py`) i otwiera http://127.0.0.1:8765. Dalej wszystko jest w przeglądarce:
-uruchamianie klientów, autologowanie (Konta), start/stop bota, wszystkie funkcje i trasa na radarze,
+uruchamia hub (`recon/hub.py`) i otwiera http://127.0.0.1:8765. Na ekranie **Moje konta**:
+
+1. Kliknij **+ Dodaj konto**. Wpisz login i hasło do gry, wybierz kanał oraz pozycję postaci (1–4 na ekranie wyboru).
+2. **Zapisz konto** zapisuje profil bez otwierania gry. **Zapisz i uruchom** od razu uruchamia grę i loguje postać.
+3. Na karcie obserwujesz uruchamianie, logowanie i wybór postaci. **Edytuj konto** zmienia dane także przy wyłączonej grze; puste hasło zachowuje zapisane hasło tego samego loginu.
+4. Po wejściu do świata **Panel postaci** otwiera radar i ustawienia funkcji. **Włącz/Wyłącz bota** steruje botem osobno od gry.
+
+Hasło jest szyfrowane przez Windows DPAPI. Błędy logowania pozostają na karcie; po poprawieniu danych można ponowić logowanie. Opcja wznowienia gry działa po pierwszym uruchomieniu konta. Klienty uruchomione ręcznie znajdziesz w **Postacie w grze**; stamtąd można przypisać im konto.
+
+Dalej wszystko jest w przeglądarce: wszystkie funkcje i trasa na radarze,
 narzędzia (ponowne wstrzyknięcie DLL, kalibracja, skan, budowa mapy), ścieżka gry i pliki
 `data/*_vnums.txt` / `radar_mobs.txt` (Ustawienia) oraz logi (Dziennik). Bot działa bez okna
 (`radar_map.py --headless`); stare okno tkinter można włączyć w Ustawieniach do diagnostyki.
+
+Testy profili i lokalnego API (z osobnym magazynem, bez uruchamiania gry): `python -m unittest discover -s tests -v`.
 
 ## Uruchomienie ręczne (konsola)
 

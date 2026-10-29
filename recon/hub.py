@@ -17,6 +17,8 @@ API (JSON):
   POST /api/clients/<pid>/window            {"visible": true/false} pokaz/ukryj okno gry
   POST /api/launch                          uruchom nowego klienta (launch.py --new: login recznie, radar sam)
   GET  /api/autologin                       profile autologowania (bez hasel) + stan
+  POST /api/autologin                       zapisz konto bez uruchomionej gry
+  POST /api/autologin/<id>/save             edytuj zapisane konto (puste haslo = zachowaj)
   POST /api/clients/<pid>/autologin         {"login","password","channel","slot","enabled","restart","radar"}
   POST /api/clients/<pid>/autologin/enabled {"enabled": true/false}
   POST /api/clients/<pid>/relog             wyloguj postac - autologowanie wejdzie od nowa (np. na inny CH)
@@ -386,8 +388,12 @@ def make_handler(hub, port):
             try:
                 n = int(self.headers.get("Content-Length", "0"))
                 body = json.loads(self.rfile.read(n) or b"{}")
+                if not isinstance(body, dict):
+                    raise ValueError("dane musza byc obiektem JSON")
                 if parts == ["api", "launch"]:
                     code, res = hub.launch()
+                elif parts == ["api", "autologin"]:
+                    code, res = 200, {"ok": True, "profile": hub.autologin.save_profile(body)}
                 elif parts == ["api", "settings"]:
                     settings.save(body)
                     code, res = 200, dict(settings_view(), ok=True)
@@ -396,6 +402,8 @@ def make_handler(hub, port):
                 elif len(parts) == 4 and parts[:2] == ["api", "autologin"]:
                     if parts[3] == "launch":
                         code, res = 200, hub.autologin.launch(parts[2])
+                    elif parts[3] == "save":
+                        code, res = 200, {"ok": True, "profile": hub.autologin.save_profile(body, parts[2])}
                     elif parts[3] == "remove":
                         hub.autologin.remove(parts[2])
                         code, res = 200, {"ok": True}

@@ -15,13 +15,13 @@
   <aside class="rail">
     <a class="brand" href="#/">
       <span class="brand-name">m2lor</span>
-      <span class="brand-sub">panel bota</span>
+      <span class="brand-sub">centrum kont</span>
     </a>
     <nav class="nav" aria-label="Sekcje panelu">
-      <a href="#/" data-view="list">Postacie</a>
-      <a href="#/konta" data-view="accounts">Konta i logowanie</a>
-      <a href="#/ustawienia" data-view="settings">Ustawienia</a>
-      <a href="#/dziennik" data-view="logs">Dziennik</a>
+      <a href="#/" data-view="accounts">Moje konta</a>
+      <a href="#/postacie" data-view="list">Postacie w grze</a>
+      <a href="#/ustawienia" data-view="settings">Ustawienia gry</a>
+      <a href="#/dziennik" data-view="logs">Dziennik zdarzeń</a>
     </nav>
     <div class="rail-roster">
       <p class="rail-title">W grze</p>
@@ -37,16 +37,17 @@
     <section id="view-list" class="view">
       <header class="view-head">
         <div>
-          <h1>Postacie</h1>
+          <h1>Postacie w grze</h1>
           <p class="summary" id="summary">Łączę z hubem…</p>
         </div>
-        <button class="btn btn-gold" id="launch" type="button">Uruchom nowego klienta</button>
+        <a class="btn btn-gold" href="#/">Przejdź do kont</a>
       </header>
       <div id="roster" class="roster" aria-live="polite"></div>
     </section>
 
     <!-- Jedna postać: radar + wszystkie funkcje -->
     <section id="view-detail" class="view detail" hidden>
+      <p class="back-link"><a href="#/">← Moje konta</a></p>
       <header class="detail-head">
         <div class="portrait"><img alt=""></div>
         <div class="who">
@@ -109,23 +110,55 @@
       </div>
     </section>
 
-    <!-- Konta: profile autologowania -->
+    <!-- Konta: konfiguracja przed uruchomieniem gry -->
     <section id="view-accounts" class="view" hidden>
       <header class="view-head">
         <div>
-          <h1>Konta i logowanie</h1>
-          <p class="summary">Bot loguje klienta sam: konto, kanał i postać. Hasło jest zaszyfrowane dla Twojego konta Windows.</p>
+          <h1>Moje konta</h1>
+          <p class="summary">Dodaj konto. Uruchom grę. Wszystko w jednym miejscu.</p>
         </div>
+        <button class="btn btn-gold" id="account-add" type="button">+ Dodaj konto</button>
       </header>
-      <div id="account-list" class="account-grid"></div>
-      <p class="hint">Nowe konto dodasz na karcie postaci w zakładce <a href="#/">Postacie</a> → „Autologowanie” przy działającym kliencie.</p>
+      <ol class="account-steps" aria-label="Jak zacząć"><li>Dodaj login i hasło</li><li>Wybierz kanał i postać</li><li>Uruchom i zaloguj</li></ol>
+      <div class="account-health" id="account-health" role="status" hidden></div>
+      <p class="account-error" id="account-load-error" role="alert" hidden></p>
+      <div class="accounts-layout">
+        <div class="accounts-main">
+          <div class="account-section-head"><h2>Zapisane konta</h2><span id="account-count" class="hint"></span></div>
+          <div id="account-list" class="account-grid"></div>
+          <div class="manual-launch"><button class="btn btn-quiet" id="launch" type="button">Uruchom grę bez zapisanego konta</button><p class="hint">W tym trybie login i hasło wpisujesz w oknie gry.</p></div>
+        </div>
+        <section class="card account-editor" id="account-editor" hidden aria-labelledby="account-editor-title">
+          <div class="account-section-head"><h2 id="account-editor-title">Dodaj konto</h2><button class="btn btn-quiet" id="account-cancel" type="button">Anuluj</button></div>
+          <p class="hint" id="account-editor-note">Dane wpisujesz tutaj, zanim uruchomisz grę.</p>
+          <form id="account-form" autocomplete="off">
+            <label class="field">Nazwa w panelu (opcjonalnie)<input name="nickname" maxlength="80" placeholder="np. Wojownik — główne konto"></label>
+            <label class="field">Login do gry<input name="login" maxlength="64" required spellcheck="false" autocomplete="off" placeholder="Wpisz login konta"></label>
+            <label class="field" for="account-password">Hasło do gry</label>
+            <div class="password-field"><input id="account-password" name="password" type="password" required autocomplete="new-password"><button class="btn btn-quiet" id="account-show-password" type="button" aria-label="Pokaż hasło" aria-pressed="false">Pokaż</button></div>
+            <p class="hint" id="account-password-note">Hasło zapisujemy zaszyfrowane dla Twojego konta Windows.</p>
+            <div class="account-fields-row">
+              <label class="field">Kanał<select name="channel"><option value="1">CH1</option><option value="2">CH2</option><option value="3">CH3</option><option value="4">CH4</option></select></label>
+              <label class="field">Postać<select name="slot"><option value="0">Postać 1</option><option value="1">Postać 2</option><option value="2">Postać 3</option><option value="3">Postać 4</option></select></label>
+            </div>
+            <p class="hint">Numer oznacza kolejność postaci na ekranie wyboru w grze.</p>
+            <div class="account-preferences">
+              <label class="check"><input type="checkbox" name="radar" checked> Włącz bota po wejściu do gry</label>
+              <label class="check"><input type="checkbox" name="restart"> Wznów grę, jeśli klient się zamknie</label>
+              <label class="check"><input type="checkbox" name="enabled" checked> Automatycznie loguj i wznawiaj połączenie</label>
+            </div>
+            <p class="account-error" id="account-form-error" role="alert" hidden></p>
+            <div class="form-actions"><button class="btn" id="account-save" type="submit" value="save">Zapisz konto</button><button class="btn btn-gold" id="account-save-launch" type="submit" value="launch">Zapisz i uruchom</button></div>
+          </form>
+        </section>
+      </div>
     </section>
 
     <!-- Ustawienia -->
     <section id="view-settings" class="view" hidden>
       <header class="view-head">
         <div>
-          <h1>Ustawienia</h1>
+          <h1>Ustawienia gry</h1>
           <p class="summary">Zmiany działają od razu, bez restartu panelu.</p>
         </div>
       </header>
@@ -178,32 +211,12 @@
       <button class="btn btn-quiet act-window" type="button"></button>
       <button class="btn act-radar" type="button"></button>
     </div>
-    <details class="autologin">
-      <summary>Autologowanie <span class="al-state"></span></summary>
-      <form class="al-form" autocomplete="off">
-        <label>Login <input name="login" required spellcheck="false"></label>
-        <label>Hasło <input name="password" type="password" autocomplete="new-password"></label>
-        <label>Kanał
-          <select name="channel"><option value="1">CH1</option><option value="2">CH2</option><option value="3">CH3</option><option value="4">CH4</option></select>
-        </label>
-        <label>Postać
-          <select name="slot"><option value="0">1</option><option value="1">2</option><option value="2">3</option><option value="3">4</option></select>
-        </label>
-        <div class="al-checks">
-          <label class="check"><input type="checkbox" name="enabled" checked> Włączone</label>
-          <label class="check"><input type="checkbox" name="restart"> Uruchom klienta ponownie, gdy się zamknie</label>
-          <label class="check"><input type="checkbox" name="radar"> Po wejściu do gry uruchom radar</label>
-        </div>
-        <div class="al-buttons">
-          <button class="btn btn-gold" type="submit">Zapisz</button>
-          <button class="btn btn-quiet al-relog" type="button">Przeloguj teraz</button>
-        </div>
-      </form>
-    </details>
+    <div class="profile-link"><button class="btn btn-quiet edit-account" type="button">Dodaj konto do tego klienta</button><span class="al-state"></span></div>
     <p class="foot"></p>
   </article>
 </template>
 
+<script src="/static/accounts.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
