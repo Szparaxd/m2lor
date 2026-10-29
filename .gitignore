@@ -58,3 +58,5 @@ logs/autologin_*.txt
 logs/caps_*.ok
 logs/radar_*.txt
 data/logs/
+logs/msg_*.txt
+logs/msg_*.ok
