@@ -23,6 +23,8 @@ z danymi konta nie trafia do printow / logow huba. Wynik komendy gra zapisuje do
 import ast
 import base64
 import ctypes
+import csv
+import io
 import json
 import os
 import secrets
@@ -269,6 +271,11 @@ def channel_of(server_info):
 # ---------------------------------------------------------------------------
 # Profile kont + petla w watku huba
 # ---------------------------------------------------------------------------
+def new_profile():
+    return {"id": secrets.token_hex(4), "pid": None, "enabled": False,
+            "restart": False, "radar": False, "channel": 1, "slot": 0}
+
+
 def public(p):
     """Profil bez hasla - to idzie do przegladarki."""
     d = {k: p.get(k) for k in ("id", "login", "channel", "slot", "enabled", "restart", "radar", "pid")}
@@ -282,11 +289,12 @@ class Manager:
 
     radar_start(pid) / radar_running(pid) - funkcje huba (start radaru po wejsciu do gry, jesli profil chce)."""
 
-    def __init__(self, radar_start=None, radar_running=None, log=print):
+    def __init__(self, radar_start=None, radar_running=None, log=print, radar_stop=None):
         self._lock = threading.RLock()
         self._profiles = self._load()
         self._state = {}                    # id profilu -> stan petli (czasy prob, status dla panelu)
         self._radar_start, self._radar_running, self._log = radar_start, radar_running, log
+        self._radar_stop = radar_stop
         self._stop = threading.Event()
         self._thread = None
 
@@ -334,7 +342,7 @@ class Manager:
                     raise ValueError("postac musi byc 1-4") from None
                 p = next((q for q in self._profiles if q["login"] == body.get("login", "").strip()
                           and q["slot"] == slot), None)
-            return self.save_profile(body, p["id"] if p else None, pid=pid)
+            return self.save_profile({"enabled": True, **body}, p["id"] if p else None, pid=pid)
 
     def save_profile(self, body, profile_id=None, pid=None):
         """Zapis bez uruchomionej gry. Puste haslo zachowuje haslo tego samego loginu."""
@@ -344,8 +352,7 @@ class Manager:
             p = self._find(id_=profile_id) if profile_id else None
             if profile_id and p is None:
                 raise LookupError("brak zapisanego konta")
-            updated = dict(p or {"id": secrets.token_hex(4), "pid": None,
-                                 "enabled": True, "restart": False, "radar": True, "channel": 1, "slot": 0})
+            updated = dict(p or new_profile())
             for key in ("login", "nickname", "password"):
                 if key in body and not isinstance(body[key], str):
                     raise ValueError("%s: podaj tekst" % key)
@@ -378,8 +385,9 @@ class Manager:
             updated["nickname"] = body.get("nickname", updated.get("nickname", "")).strip()
             if pid is not None:
                 updated["pid"] = pid
-            if any(q is not p and q["login"] == login and q["slot"] == updated["slot"] for q in self._profiles):
-                raise ValueError("to konto i postac sa juz zapisane - edytuj istniejacy profil")
+            if any(q is not p and q["login"] == login and (p is None or q["slot"] == updated["slot"])
+                   for q in self._profiles):
+                raise ValueError("to konto jest juz zapisane - edytuj istniejacy login")
             old_profiles = [(q, dict(q)) for q in self._profiles]
             if p is None:
                 p = updated
@@ -402,6 +410,64 @@ class Manager:
             self._log("[autologin] zapisano profil %s (PID %s), CH%d, postac %d"
                       % (p["id"], p.get("pid"), p["channel"], p["slot"] + 1))
             return public(p)
+
+    def import_credentials(self, text):
+        """Atomowy import login/haslo (CSV lub dwie kolumny z arkusza). Bez nadpisywania kont."""
+        if not isinstance(text, str) or not text.strip() or len(text) > 256 * 1024:
+            raise ValueError("Wklej dane kont (maksymalnie 256 KB).")
+        text = text.lstrip("\ufeff")
+        # Separator konczy pierwsze pole (login). Nie zgadujemy na podstawie hasla,
+        # ktore moze zawierac dowolna liczbe przecinkow lub srednikow.
+        delimiter, quoted = None, False
+        for char in text.lstrip():
+            if char == '"':
+                quoted = not quoted
+            elif not quoted and char in ";,\t":
+                delimiter = char
+                break
+            elif not quoted and char in "\r\n":
+                break
+        if delimiter is None:
+            raise ValueError("Pierwszy wiersz: rozdziel login i haslo srednikiem, przecinkiem lub tabulatorem.")
+        rows = []
+        reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter, strict=True)
+        try:
+            for row in reader:
+                if not row or not any(value.strip() for value in row):
+                    continue
+                if not rows and len(row) == 2 and [v.strip().lower() for v in row] in (
+                        ["login", "password"], ["login", "haslo"], ["login", "hasło"]):
+                    continue
+                if len(row) != 2 or not row[0].strip() or not row[1] or len(row[0].strip()) > 64:
+                    raise ValueError("Wiersz %d: wymagane dwie kolumny: login i haslo." % reader.line_num)
+                rows.append((row[0].strip(), row[1]))
+                if len(rows) > 500:
+                    raise ValueError("Jednorazowo mozna importowac maksymalnie 500 kont.")
+        except csv.Error:
+            raise ValueError("Wiersz %d: nieprawidlowy CSV (sprawdz cudzyslowy i separator)." % reader.line_num) from None
+        if not rows:
+            raise ValueError("Brak kont do importu.")
+        with self._lock:
+            known = {p["login"] for p in self._profiles}
+            added, skipped = [], 0
+            for login, password in rows:
+                if login in known:
+                    skipped += 1
+                    continue
+                p = new_profile()
+                p.update(login=login, nickname="", pwd=protect(password))
+                added.append(p)
+                known.add(login)
+            previous = list(self._profiles)
+            self._profiles.extend(added)
+            try:
+                if added:
+                    self._save()
+            except OSError:
+                self._profiles = previous
+                raise
+            self._log("[autologin] import: dodano %d, pominieto %d" % (len(added), skipped))
+            return {"ok": True, "added": len(added), "skipped": skipped}
 
     def set_enabled(self, pid_or_id, enabled):
         with self._lock:
@@ -436,8 +502,14 @@ class Manager:
             raise ValueError("postac nie jest w grze ani na wyborze postaci (faza %s)" % (res.get("phase") or "?"))
         return {"ok": True}
 
-    def launch(self, profile_id):
+    def launch(self, profile_id, options=None):
         """Uruchom nowego klienta dla profilu (petla przypnie nowy PID i zaloguje)."""
+        if options is None:
+            options = {}
+        if not isinstance(options, dict) or set(options) - {"channel", "slot", "radar", "restart", "relog"}:
+            raise ValueError("Nieprawidlowe opcje logowania.")
+        if "relog" in options and type(options["relog"]) is not bool:
+            raise ValueError("Nieprawidlowa opcja przelogowania.")
         with self._lock:
             p = self._find(id_=profile_id)
             if p is None:
@@ -449,6 +521,19 @@ class Manager:
             running = p.get("pid") in alive
             if not running and not os.path.isfile(settings.game_path()):
                 raise ValueError("Nie ma pliku gry. Popraw sciezke w Ustawieniach gry.")
+            choices = {k: v for k, v in options.items() if k != "relog"}
+            if choices:
+                self.save_profile(choices, profile_id)
+            if running and options.get("radar") is False and self._radar_stop:
+                code, result = self._radar_stop(p["pid"])
+                if code >= 400 or result.get("ok") is False:
+                    raise ValueError("Nie udalo sie zatrzymac bota. Otworz panel postaci i ponow probe.")
+            if running and options.get("relog"):
+                result = game_logout(p["pid"])
+                if result is None or (not result.get("sent") and result.get("phase") != "LoginWindow"):
+                    self._status(p, "error", "Nie udalo sie przelogowac. Pokaz okno gry i ponow probe.")
+                    raise ValueError("Gra nie przyjela przelogowania. Pokaz jej okno i ponow probe.")
+            st = self._st(p)
             st.clear()                       # ponow takze po WRONGPWD na istniejacym kliencie
             p["enabled"] = True
             if not running:

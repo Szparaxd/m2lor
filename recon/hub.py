@@ -18,6 +18,7 @@ API (JSON):
   POST /api/launch                          uruchom nowego klienta (launch.py --new: login recznie, radar sam)
   GET  /api/autologin                       profile autologowania (bez hasel) + stan
   POST /api/autologin                       zapisz konto bez uruchomionej gry
+  POST /api/autologin/import                {"text": CSV login/haslo}, import bez uruchamiania
   POST /api/autologin/<id>/save             edytuj zapisane konto (puste haslo = zachowaj)
   POST /api/clients/<pid>/autologin         {"login","password","channel","slot","enabled","restart","radar"}
   POST /api/clients/<pid>/autologin/enabled {"enabled": true/false}
@@ -144,6 +145,7 @@ class Hub:
         # auto-logowanie: po wejsciu do gry moze sam uruchomic radar (jesli profil tego chce)
         self.autologin = autologin.Manager(
             radar_start=self.radar_start,
+            radar_stop=self.radar_stop,
             radar_running=lambda pid: read_worker(pid) is not None
             or time.time() - self._starting.get(pid, 0) < START_GRACE)
 
@@ -387,6 +389,8 @@ def make_handler(hub, port):
             parts = urlparse(self.path).path.strip("/").split("/")
             try:
                 n = int(self.headers.get("Content-Length", "0"))
+                if n < 0 or n > 1024 * 1024:
+                    raise ValueError("zadanie jest za duze (maksymalnie 1 MB)")
                 body = json.loads(self.rfile.read(n) or b"{}")
                 if not isinstance(body, dict):
                     raise ValueError("dane musza byc obiektem JSON")
@@ -394,6 +398,8 @@ def make_handler(hub, port):
                     code, res = hub.launch()
                 elif parts == ["api", "autologin"]:
                     code, res = 200, {"ok": True, "profile": hub.autologin.save_profile(body)}
+                elif parts == ["api", "autologin", "import"]:
+                    code, res = 200, hub.autologin.import_credentials(body.get("text"))
                 elif parts == ["api", "settings"]:
                     settings.save(body)
                     code, res = 200, dict(settings_view(), ok=True)
@@ -401,7 +407,7 @@ def make_handler(hub, port):
                     code, res = 200, write_file(parts[2], body.get("text"))
                 elif len(parts) == 4 and parts[:2] == ["api", "autologin"]:
                     if parts[3] == "launch":
-                        code, res = 200, hub.autologin.launch(parts[2])
+                        code, res = 200, hub.autologin.launch(parts[2], body)
                     elif parts[3] == "save":
                         code, res = 200, {"ok": True, "profile": hub.autologin.save_profile(body, parts[2])}
                     elif parts[3] == "remove":

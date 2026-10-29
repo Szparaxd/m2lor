@@ -202,6 +202,20 @@ class AccountHTTPTests(AccountFixture):
         code, _ = self.post("/api/autologin", [])
         self.assertEqual(code, 400)
 
+    def test_bulk_import_http_accepts_two_columns_without_launching(self):
+        code, result = self.post('/api/autologin/import', {'text': 'alfa;secret-a\nbeta;secret-b'})
+        self.assertEqual(code, 200, result)
+        self.assertEqual(result['added'], 2)
+        self.assertFalse(self.manager.profiles()[0]['enabled'])
+        self.assertNotIn('secret', json.dumps(result))
+
+    def test_http_launch_passes_selected_channel_and_options(self):
+        p = self.create()
+        code, result = self.post(f'/api/autologin/{p["id"]}/launch', {'channel': 4, 'slot': 3, 'radar': False})
+        self.assertEqual(code, 200, result)
+        current = self.manager.profiles()[0]
+        self.assertEqual((current['channel'], current['slot'], current['radar']), (4, 3, False))
+
 
 if __name__ == "__main__":
     unittest.main()

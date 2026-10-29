@@ -42,12 +42,12 @@ indziej, popraw je przed uruchomieniem.
 Po zbudowaniu DLL (niżej) wystarczy dwuklik w **`panel.bat`**: prosi o uprawnienia administratora,
 uruchamia hub (`recon/hub.py`) i otwiera http://127.0.0.1:8765. Na ekranie **Moje konta**:
 
-1. Kliknij **+ Dodaj konto**. Wpisz login i hasło do gry, wybierz kanał oraz pozycję postaci (1–4 na ekranie wyboru).
-2. **Zapisz konto** zapisuje profil bez otwierania gry. **Zapisz i uruchom** od razu uruchamia grę i loguje postać.
-3. Na karcie obserwujesz uruchamianie, logowanie i wybór postaci. **Edytuj konto** zmienia dane także przy wyłączonej grze; puste hasło zachowuje zapisane hasło tego samego loginu.
-4. Po wejściu do świata **Panel postaci** otwiera radar i ustawienia funkcji. **Włącz/Wyłącz bota** steruje botem osobno od gry.
+1. Wpisz **Login** i **Hasło** nad tabelą, kliknij **Dodaj**. Sam zapis nie uruchamia gry ani logowania.
+2. Wiele kont dodasz przez **Import CSV / wklej**: plik CSV/TSV lub dwie kolumny z Excela. Format: `login;hasło` (także przecinek lub tabulator). Nagłówek jest opcjonalny. Hasło z separatorem ujmij w cudzysłowy zgodnie z CSV. Import pomija istniejące loginy bez zmiany ich haseł i zapisuje całość dopiero po walidacji. Limit: 500 kont / 256 KB.
+3. **Uruchom** przy koncie lub **Uruchom zaznaczone** otwiera wybór CH, pozycji postaci (1–4), bota po wejściu i restartu klienta. Dla kont już w świecie gra jest przelogowywana. Ostatnie opcje są pamiętane.
+4. Tabela pokazuje status, ostatni CH/postać i stan bota. **Panel** otwiera radar. **Bot ON/OFF** steruje botem osobno od gry. Pod **⋯** znajdziesz edycję loginu/hasła, pokazanie okna, wstrzymanie logowania i usunięcie danych z panelu.
 
-Hasło jest szyfrowane przez Windows DPAPI. Błędy logowania pozostają na karcie; po poprawieniu danych można ponowić logowanie. Opcja wznowienia gry działa po pierwszym uruchomieniu konta. Klienty uruchomione ręcznie znajdziesz w **Postacie w grze**; stamtąd można przypisać im konto.
+Hasło jest szyfrowane przez Windows DPAPI. Puste hasło przy edycji zachowuje zapisane hasło tego samego loginu. Błędy pozostają w tabeli; po poprawieniu danych można ponowić logowanie. Klienty uruchomione ręcznie znajdziesz w **Postacie w grze**; stamtąd można przypisać im konto.
 
 Dalej wszystko jest w przeglądarce: wszystkie funkcje i trasa na radarze,
 narzędzia (ponowne wstrzyknięcie DLL, kalibracja, skan, budowa mapy), ścieżka gry i pliki

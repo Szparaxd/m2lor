@@ -922,7 +922,7 @@ const detailView = {
       }
       if (this.showNames && e.name && e.kind !== "npc") labels.push([x, y, e.name, KIND_COLOR[e.kind]]);
     }
-    g.font = `${r(11)}px "IBM Plex Sans", sans-serif`;
+    g.font = `${r(11)}px "Segoe UI", sans-serif`;
     g.textAlign = "center";
     for (const [x, y, name, col] of labels) {
       g.fillStyle = "rgba(0,0,0,0.8)";

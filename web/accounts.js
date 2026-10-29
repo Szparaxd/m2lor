@@ -1,286 +1,256 @@
 "use strict";
 
-// Konta sa niezalezne od procesow gry. Polling aktualizuje tylko karty, nigdy formularz.
+// Konta = login i haslo; konfiguracja sesji dopiero w oknie uruchamiania.
 function createAccountsView() {
   const view = {
     root: $("#view-accounts"), box: $("#account-list"), editor: $("#account-editor"), form: $("#account-form"),
-    profiles: [], cards: new Map(), pending: new Set(), actionErrors: new Map(), editing: null, attachPid: null,
-    inFlight: false, saving: false, config: null, configAt: 0,
+    profiles: [], cards: new Map(), pending: new Set(), selected: new Set(), actionErrors: new Map(),
+    editing: null, attachPid: null, dirty: false, inFlight: false, saving: false, importing: false,
+    launching: false, launchIds: [], config: null, configAt: 0,
 
     async refresh() {
       if (this.inFlight) return;
       this.inFlight = true;
       try {
-        const data = await getJSON("/api/autologin");
-        this.profiles = data.profiles;
+        this.profiles = (await getJSON("/api/autologin")).profiles;
         $("#account-load-error").hidden = true;
         if (!this.config || Date.now() - this.configAt > 10000) {
-          try {
-            this.config = await getJSON("/api/settings");
-            this.configAt = Date.now();
-          } catch { this.config = null; }
+          try { this.config = await getJSON("/api/settings"); this.configAt = Date.now(); }
+          catch { this.config = null; }
         }
-        this.renderHealth();
-        this.render();
+        this.renderHealth(); this.render();
       } catch (e) {
-        $("#account-load-error").textContent = `Nie udało się odczytać kont: ${e.message}. Sprawdź, czy panel.bat jest uruchomiony.`;
+        $("#account-load-error").textContent = `Odczyt kont: ${e.message}. Sprawdź panel.bat.`;
         $("#account-load-error").hidden = false;
       } finally { this.inFlight = false; }
     },
+    ready() { return !!(hub.ok && this.config?.game_found && this.config?.admin); },
+    client(p) { return hub.clients.find(c => c.pid === p.pid); },
+    inGame(p) { return !!this.client(p) && (p.status?.state === "ingame" || !!this.client(p).snapshot?.ident?.nick); },
+    busy(p) { return this.pending.has(p.id) || p.status?.state === "launch"
+      || (!!this.client(p) && p.enabled && ["wait", "login", "select", "loading"].includes(p.status?.state)); },
 
     renderHealth() {
-      const health = $("#account-health");
-      health.replaceChildren();
-      const problems = [];
-      if (!this.config) problems.push("Nie udało się sprawdzić gotowości gry. Spróbuj ponownie za chwilę.");
+      const health = $("#account-health"), problems = [];
+      if (!this.config) problems.push("Nie można sprawdzić gotowości gry.");
       else {
-        if (!this.config.game_found) problems.push("Nie znaleziono pliku gry. Wskaż poprawny plik .exe w ustawieniach.");
-        if (!this.config.admin) problems.push("Uruchom panel.bat jako administrator, aby działało automatyczne logowanie i bot.");
+        if (!this.config.game_found) problems.push("Brak pliku gry — popraw ścieżkę w ustawieniach.");
+        if (!this.config.admin) problems.push("Logowanie i bot wymagają uruchomienia panel.bat jako administrator.");
       }
-      health.hidden = !problems.length;
-      for (const text of problems) health.append(el("p", null, text));
+      health.replaceChildren(); health.hidden = !problems.length;
       if (problems.length) {
-        const link = el("a", null, "Otwórz ustawienia gry →");
-        link.href = "#/ustawienia";
-        health.append(link);
+        health.append(document.createTextNode(problems.join(" ") + " "));
+        const link = el("a", null, "Ustawienia"); link.href = "#/ustawienia"; health.append(link);
       }
       $("#launch").disabled = !this.ready() || $("#launch").dataset.busy === "true";
-      $("#account-save-launch").disabled = this.saving || $("#account-save-launch").hidden || !this.ready();
+      $("#account-launch-form button[type=submit]").disabled = !this.ready() || this.launching;
+      this.updateSelection();
     },
 
-    ready() { return !!(hub.ok && this.config && this.config.game_found && this.config.admin); },
-
     makeCard(id) {
-      const card = el("article", "card account");
-      card.dataset.id = id;
-      card.innerHTML = `<div class="account-head"><div><h2 class="account-name"></h2><p class="account-meta"></p></div><span class="al-state" role="status"></span></div>
-        <p class="account-bot hint"></p><ol class="login-progress" aria-label="Przebieg logowania" hidden><li>Uruchomienie gry</li><li>Logowanie</li><li>Wybór postaci</li><li>W grze</li></ol>
-        <p class="account-problem" role="status" hidden></p><p class="account-running-note hint" hidden></p>
-        <div class="account-actions"><button class="btn btn-gold account-run" type="button">Uruchom i zaloguj</button><a class="btn btn-gold account-open">Panel postaci</a><button class="btn account-bot-toggle" type="button">Włącz bota</button><button class="btn btn-quiet account-window" type="button">Pokaż okno gry</button><button class="btn btn-quiet account-edit" type="button">Edytuj konto</button></div>
-        <details class="account-more"><summary>Więcej opcji</summary><div class="account-extra"><button class="btn btn-quiet account-relog" type="button">Przeloguj na zapisany kanał i postać</button><button class="btn btn-quiet account-enabled" type="button">Wstrzymaj autologowanie</button><button class="btn btn-danger account-remove" type="button">Usuń zapisane konto</button></div></details>`;
-      const action = (selector, fn) => $(selector, card).addEventListener("click", () => {
+      const row = el("tr"); row.dataset.id = id;
+      row.innerHTML = `<td><input class="account-select" type="checkbox"></td><td><code class="account-login"></code></td>
+        <td class="account-status-cell"><span class="al-state"></span><small class="account-problem" hidden></small></td>
+        <td class="account-last"></td><td class="account-bot"></td>
+        <td><div class="account-actions"><button class="btn account-run" type="button">Uruchom</button><a class="btn btn-quiet account-open">Panel</a><button class="btn btn-quiet account-bot-toggle" type="button">Bot</button><details class="account-more"><summary aria-label="Więcej opcji">⋯</summary><div class="account-extra"><button class="btn btn-quiet account-window" type="button">Pokaż grę</button><button class="btn btn-quiet account-edit" type="button">Edytuj login / hasło</button><button class="btn btn-quiet account-enabled" type="button">Wstrzymaj logowanie</button><button class="btn btn-danger account-remove" type="button">Usuń z panelu</button></div></details></div></td>`;
+      const action = (selector, fn) => $(selector, row).addEventListener("click", () => {
         const p = this.profiles.find(p => p.id === id);
-        if (p && !this.pending.has(id)) fn(p);
+        if (p && !this.pending.has(id)) { $(".account-more", row).open = false; fn(p); }
       });
-      action(".account-run", p => this.launch(p));
+      $(".account-select", row).addEventListener("change", ev => {
+        ev.target.checked ? this.selected.add(id) : this.selected.delete(id); this.updateSelection();
+      });
+      action(".account-run", p => this.openLaunch([p.id]));
       action(".account-edit", p => this.openEditor(p));
       action(".account-bot-toggle", p => this.toggleBot(p));
-      action(".account-window", p => this.perform(p, async () => {
-        await post(`/api/clients/${p.pid}/window`, { visible: true });
-      }));
-      action(".account-relog", p => {
-        if (confirm("Wylogować postać i zalogować ją ponownie na zapisany kanał i pozycję postaci?")) {
-          this.perform(p, async () => { await post(`/api/clients/${p.pid}/relog`); });
+      action(".account-window", p => this.perform(p, () => post(`/api/clients/${p.pid}/window`, {visible:true})));
+      action(".account-enabled", p => this.perform(p, () => post(`/api/autologin/${p.id}/save`, {enabled:!p.enabled})));
+      action(".account-remove", p => {
+        if (confirm(`Usunąć login „${p.login}” i zapisane hasło z panelu? Konto w grze pozostanie.`)) {
+          this.perform(p, async () => {
+            await post(`/api/autologin/${p.id}/remove`); if (this.editing === p.id) this.closeEditor();
+          });
         }
       });
-      action(".account-enabled", p => this.perform(p, async () => {
-        await post(`/api/autologin/${p.id}/save`, { enabled: !p.enabled });
-      }));
-      action(".account-remove", p => {
-        if (!confirm(`Usunąć zapisane konto „${p.nickname || p.login}” z panelu? Usuwa to dane logowania, nie konto w grze.`)) return;
-        this.perform(p, async () => {
-          await post(`/api/autologin/${p.id}/remove`);
-          if (this.editing === p.id) this.closeEditor();
-        });
-      });
-      return card;
+      return row;
     },
 
     render() {
-      $("#account-count").textContent = plural(this.profiles.length, "konto", "konta", "kont");
-      if (!this.profiles.length) {
-        if (!$(".empty", this.box)) {
-          const empty = el("div", "empty");
-          empty.append(el("strong", null, "Dodaj swoje pierwsze konto"),
-            el("p", null, "Wpisz login i hasło tutaj, w panelu. Gra nie musi być uruchomiona."));
-          const add = el("button", "btn btn-gold", "+ Dodaj konto");
-          add.type = "button";
-          add.addEventListener("click", () => this.openEditor());
-          empty.append(add);
-          this.box.append(empty);
-        }
-      } else $(".empty", this.box)?.remove();
+      $("#account-count").textContent = `(${this.profiles.length})`;
+      if (!this.profiles.length && !$(".empty-row", this.box)) {
+        const row = el("tr", "empty-row"), td = el("td", null, "Brak kont. Wpisz login i hasło powyżej lub zaimportuj listę.");
+        td.colSpan = 6; row.append(td); this.box.append(row);
+      }
+      if (this.profiles.length) $(".empty-row", this.box)?.remove();
       const seen = new Set();
       for (const p of this.profiles) {
         seen.add(p.id);
-        let card = this.cards.get(p.id);
-        if (!card) { card = this.makeCard(p.id); this.cards.set(p.id, card); this.box.append(card); }
-        const c = hub.clients.find(c => c.pid === p.pid);
-        const state = p.status?.state || "idle";
-        const ingame = !!c && (state === "ingame" || !!c.snapshot?.ident?.nick);
-        const busy = this.pending.has(p.id) || state === "launch" || (!!c && ["wait", "login", "select", "loading"].includes(state));
-        const error = state === "error";
-        const disabled = this.pending.has(p.id);
-        $(".account-name", card).textContent = p.nickname || p.login;
-        $(".account-meta", card).textContent = `${p.login} · CH${p.channel} · Postać ${p.slot + 1}`;
-        const status = $(".al-state", card);
-        status.textContent = error ? "Wymaga uwagi" : ingame ? "W grze" : state === "launch" ? "Uruchamiam grę…"
-          : !c ? "Wyłączone" : !p.enabled ? "Logowanie ręczne" : ({login:"Loguję…",select:"Wybieram postać…",loading:"Ładuję mapę…"}[state] || "Przygotowuję grę…");
+        let row = this.cards.get(p.id);
+        if (!row) { row = this.makeCard(p.id); this.cards.set(p.id, row); this.box.append(row); }
+        const c = this.client(p), state = p.status?.state, ingame = this.inGame(p), busy = this.busy(p), error = state === "error";
+        $(".account-login", row).textContent = p.login;
+        const select = $(".account-select", row); select.checked = this.selected.has(p.id); select.disabled = busy;
+        select.setAttribute("aria-label", `Zaznacz ${p.login}`);
+        const status = $(".al-state", row);
+        status.textContent = error ? "Błąd" : ingame ? "W grze" : state === "launch" ? "Start…" : !c ? "Wyłączone"
+          : !p.enabled ? "Ręcznie" : ({login:"Logowanie…", select:"Postać…", loading:"Mapa…"}[state] || "Oczekiwanie…");
         status.dataset.tone = error ? "bad" : ingame ? "ok" : busy ? "busy" : "";
-        $(".account-bot", card).textContent = ingame
-          ? `Bot: ${c.radar === "on" ? "włączony" : c.radar === "starting" ? "uruchamia się…" : "wyłączony"}`
-          : `Bot po zalogowaniu: ${p.radar ? "włączony" : "wyłączony"}`;
-        const progress = $(".login-progress", card);
-        progress.hidden = !busy && !ingame;
-        const index = ingame ? 3 : state === "loading" || state === "select" ? 2 : state === "login" ? 1 : 0;
-        Array.from(progress.children).forEach((li, i) => {
-          li.dataset.step = i < index ? "done" : i === index ? "current" : "next";
-          if (i === index) li.setAttribute("aria-current", "step"); else li.removeAttribute("aria-current");
-        });
-        const problem = $(".account-problem", card);
-        const botError = ingame && ["error", "busy"].includes(c.radar);
-        problem.hidden = !error && !botError && !this.actionErrors.has(p.id);
-        problem.textContent = this.actionErrors.get(p.id) || (error ? `${p.status.text}. Popraw dane w „Edytuj konto” lub spróbuj ponownie.`
-          : botError ? "Bot nie odpowiada. Otwórz panel postaci lub spróbuj uruchomić go ponownie." : "");
-        const run = $(".account-run", card);
-        run.hidden = !!c && !error && p.enabled;
-        run.disabled = busy || disabled || !this.ready();
-        run.textContent = error ? "Spróbuj ponownie" : busy ? "Uruchamianie…" : c ? "Wznów logowanie" : "Uruchom i zaloguj";
-        const open = $(".account-open", card);
-        open.hidden = !ingame;
-        open.href = `#/p/${p.pid}`;
-        const bot = $(".account-bot-toggle", card);
-        bot.hidden = !ingame;
-        bot.textContent = c?.radar === "on" ? "Wyłącz bota" : c?.radar === "starting" ? "Bot startuje…" : "Włącz bota";
-        bot.disabled = disabled || c?.radar === "starting" || !this.ready();
-        $(".account-window", card).hidden = !c;
-        $(".account-window", card).disabled = disabled;
-        $(".account-edit", card).disabled = busy || disabled;
-        $(".account-relog", card).hidden = !ingame || !p.enabled;
-        $(".account-relog", card).disabled = disabled;
-        $(".account-enabled", card).textContent = p.enabled ? "Wstrzymaj autologowanie" : "Włącz autologowanie";
-        $(".account-enabled", card).disabled = busy || disabled;
-        $(".account-remove", card).disabled = busy || disabled;
-        const note = $(".account-running-note", card);
-        note.hidden = !(c && ingame && p.enabled);
-        note.textContent = "Zmianę kanału lub postaci zastosujesz przez „Więcej opcji” → „Przeloguj”.";
+        const problem = $(".account-problem", row), botError = ingame && ["busy", "error"].includes(c.radar);
+        problem.textContent = this.actionErrors.get(p.id) || (error ? p.status.text : botError ? "Bot nie odpowiada. Otwórz Panel." : "");
+        problem.hidden = !problem.textContent;
+        $(".account-last", row).textContent = `CH${p.channel} / ${p.slot + 1}`;
+        $(".account-bot", row).textContent = c?.radar === "on" ? "ON" : c?.radar === "starting" ? "Start…" : "OFF";
+        const run = $(".account-run", row);
+        run.textContent = busy ? "Czekaj…" : ingame ? "Przeloguj" : error ? "Ponów" : "Uruchom"; run.disabled = busy || !this.ready();
+        const open = $(".account-open", row); open.hidden = !c; open.href = `#/p/${p.pid}`;
+        const bot = $(".account-bot-toggle", row); bot.hidden = !ingame;
+        bot.textContent = c?.radar === "on" ? "Bot OFF" : "Bot ON"; bot.disabled = busy || c?.radar === "starting" || !this.ready();
+        $(".account-window", row).hidden = !c;
+        for (const key of ["edit", "enabled", "remove", "window"]) $(".account-" + key, row).disabled = busy;
+        $(".account-enabled", row).textContent = p.enabled ? "Wstrzymaj logowanie" : "Włącz logowanie";
       }
-      for (const [id, card] of this.cards) if (!seen.has(id)) { card.remove(); this.cards.delete(id); }
+      for (const [id, row] of this.cards) if (!seen.has(id)) { row.remove(); this.cards.delete(id); this.selected.delete(id); }
+      this.updateSelection();
     },
 
-    openEditor(profile = null, pid = null) {
-      if (this.saving) return;
-      if (!this.editor.hidden && !confirm("Odrzucić zmiany w otwartym formularzu konta?")) return;
-      this.editing = profile?.id || null;
-      this.attachPid = pid;
-      this.form.reset();
-      const f = this.form.elements;
-      for (const key of ["nickname", "login"]) f[key].value = profile?.[key] || "";
-      f.channel.value = String(profile?.channel || 1);
-      f.slot.value = String(profile?.slot || 0);
-      for (const key of ["radar", "enabled", "restart"]) f[key].checked = profile ? !!profile[key] : key !== "restart";
-      f.password.required = !profile?.has_password;
-      f.password.placeholder = profile?.has_password ? "Zostaw puste, aby zachować hasło" : "Wpisz hasło konta";
-      f.password.type = "password";
-      $("#account-show-password").textContent = "Pokaż";
-      $("#account-show-password").setAttribute("aria-pressed", "false");
-      $("#account-show-password").setAttribute("aria-label", "Pokaż hasło");
-      $("#account-editor-title").textContent = profile ? "Edytuj konto" : "Dodaj konto";
-      $("#account-editor-note").textContent = pid ? "Dane przypiszemy do wybranego, działającego klienta." : "Dane wpisujesz tutaj, zanim uruchomisz grę.";
-      $("#account-password-note").textContent = profile?.has_password
-        ? "Hasło jest zapisane. Zmieniając login, podaj również hasło."
-        : "Hasło zapisujemy zaszyfrowane dla Twojego konta Windows.";
-      $("#account-save").textContent = profile ? "Zapisz zmiany" : "Zapisz konto";
-      $("#account-save-launch").hidden = !!profile || !!pid;
-      this.renderHealth();
-      $("#account-form-error").hidden = true;
-      this.editor.hidden = false;
-      f.nickname.focus();
-      this.editor.scrollIntoView({block:"nearest"});
+    updateSelection() {
+      const available = this.profiles.filter(p => !this.busy(p)), selected = available.filter(p => this.selected.has(p.id));
+      $("#account-selection").textContent = `Zaznaczone: ${selected.length}`;
+      $("#account-run-selected").disabled = !selected.length || !this.ready() || this.launching;
+      const all = $("#account-select-all"); all.checked = !!available.length && selected.length === available.length;
+      all.indeterminate = selected.length > 0 && selected.length < available.length; all.disabled = !available.length;
+    },
+
+    openEditor(p = null, pid = null) {
+      if (this.saving || (this.dirty && !confirm("Odrzucić wpisane dane konta?"))) return;
+      this.editing = p?.id || null; this.attachPid = pid; this.dirty = false;
+      this.form.reset(); this.form.elements.login.value = p?.login || "";
+      this.form.elements.password.required = !p?.has_password; this.form.elements.password.type = "password";
+      this.form.elements.password.placeholder = p?.has_password ? "puste = bez zmian" : "hasło";
+      $("#account-show-password").textContent = "Pokaż"; $("#account-show-password").setAttribute("aria-pressed", "false");
+      $("#account-editor-title").textContent = p ? "Edytuj konto" : pid ? "Przypisz konto" : "Dodaj konto";
+      $("#account-save").textContent = p ? "Zapisz" : "Dodaj"; $("#account-cancel").hidden = !p && !pid;
+      $("#account-password-note").hidden = !p?.has_password;
+      $("#account-password-note").textContent = "Puste hasło = zachowaj zapisane. Po zmianie loginu podaj hasło.";
+      $("#account-form-error").hidden = true; this.form.elements.login.focus(); this.editor.scrollIntoView({block:"nearest"});
     },
 
     closeEditor(focus = true) {
       if (this.saving) return;
-      this.form.elements.password.value = "";
-      this.editor.hidden = true;
-      this.editing = null;
-      this.attachPid = null;
-      if (focus) $("#account-add").focus();
+      this.editing = null; this.attachPid = null; this.dirty = false; this.form.reset();
+      this.form.elements.password.value = ""; this.form.elements.password.required = true;
+      this.form.elements.password.type = "password"; this.form.elements.password.placeholder = "hasło";
+      $("#account-show-password").textContent = "Pokaż"; $("#account-show-password").setAttribute("aria-pressed", "false");
+      $("#account-editor-title").textContent = "Dodaj konto"; $("#account-save").textContent = "Dodaj";
+      $("#account-cancel").hidden = true; $("#account-password-note").hidden = true; $("#account-form-error").hidden = true;
+      if (!focus) { this.closeImport(); if (!this.launching) $("#account-launch-dialog").close(); }
+      else this.form.elements.login.focus();
     },
 
-    async save(launch) {
-      if (this.saving) return;
-      launch = !!(launch && !this.editing && !this.attachPid);
-      const f = this.form.elements;
-      if (!this.form.reportValidity()) return;
-      if (launch && !this.ready()) { this.formError("Sprawdź gotowość gry powyżej formularza."); return; }
-      this.saving = true;
-      $("#account-form-error").hidden = true;
-      const buttons = Array.from(this.editor.querySelectorAll("button"));
-      buttons.forEach(b => b.disabled = true);
-      let saved = null;
-      try {
-        const body = {nickname:f.nickname.value.trim(), login:f.login.value.trim(), password:f.password.value,
-          channel:Number(f.channel.value), slot:Number(f.slot.value), radar:f.radar.checked,
-          enabled:launch ? true : f.enabled.checked, restart:f.restart.checked};
-        const url = this.attachPid ? `/api/clients/${this.attachPid}/autologin`
-          : this.editing ? `/api/autologin/${this.editing}/save` : "/api/autologin";
-        saved = (await post(url, body)).profile;
-        f.password.value = "";
-      } catch (e) { this.formError(e.message); }
-      finally {
-        this.saving = false;
-        buttons.forEach(b => b.disabled = false);
-        this.renderHealth();
-      }
+    async save() {
+      if (this.saving || !this.form.reportValidity()) return;
+      this.saving = true; $("#account-form-error").hidden = true;
+      const f = this.form.elements, body = {login:f.login.value.trim(), password:f.password.value};
+      const url = this.attachPid ? `/api/clients/${this.attachPid}/autologin` : this.editing ? `/api/autologin/${this.editing}/save` : "/api/autologin";
+      if (this.attachPid) body.enabled = false;
+      const controls = Array.from(this.form.querySelectorAll("input,button")); controls.forEach(e => e.disabled = true); let saved;
+      try { saved = (await post(url, body)).profile; f.password.value = ""; }
+      catch (e) { $("#account-form-error").textContent = e.message; $("#account-form-error").hidden = false; }
+      finally { this.saving = false; controls.forEach(e => e.disabled = false); }
       if (!saved) return;
-      this.actionErrors.delete(saved.id);
-      this.closeEditor();
-      showNotice("Konto zapisane.", "ok");
-      await this.refresh();
-      if (launch) await this.launch(saved);
+      this.actionErrors.delete(saved.id); this.closeEditor();
+      showNotice("Zapisano konto. Opcje wybierzesz przy uruchomieniu.", "ok"); await this.refresh();
     },
 
-    formError(text) { $("#account-form-error").textContent = text; $("#account-form-error").hidden = false; },
+    closeImport() {
+      if (this.importing) return;
+      $("#account-import").hidden = true; $("#account-import-text").value = ""; $("#account-import-file").value = "";
+      $("#account-import-toggle").setAttribute("aria-expanded", "false");
+    },
+    async importAccounts() {
+      if (this.importing) return;
+      this.importing = true;
+      const controls = Array.from($("#account-import-form").querySelectorAll("input,textarea,button")), text = $("#account-import-text").value;
+      controls.forEach(e => e.disabled = true); $("#account-import-status").textContent = "Importowanie…";
+      try {
+        const r = await post("/api/autologin/import", {text});
+        $("#account-import-text").value = ""; $("#account-import-file").value = "";
+        $("#account-import-status").textContent = `Dodano: ${r.added}. Pominięto istniejące / powtórzone: ${r.skipped}.`; await this.refresh();
+      } catch (e) { $("#account-import-status").textContent = `Import nie został zapisany: ${e.message}`; }
+      finally { this.importing = false; controls.forEach(e => e.disabled = false); }
+    },
+
+    openLaunch(ids) {
+      if (this.launching) return;
+      this.launchIds = ids.filter(id => this.profiles.some(p => p.id === id && !this.busy(p))); if (!this.launchIds.length) return;
+      const p = this.profiles.find(p => p.id === this.launchIds[0]), f = $("#account-launch-form").elements;
+      f.channel.value = String(this.launchIds.length === 1 ? p.channel : 1); f.slot.value = String(this.launchIds.length === 1 ? p.slot : 0);
+      f.radar.checked = this.launchIds.length === 1 && !!p.radar; f.restart.checked = this.launchIds.length === 1 && !!p.restart;
+      $("#account-launch-target").textContent = this.launchIds.length === 1 ? p.login : `Wybrane konta: ${this.launchIds.length}. Opcje wspólne dla wszystkich.`;
+      $("#account-launch-error").hidden = true; this.renderHealth(); $("#account-launch-dialog").showModal();
+    },
+    async submitLaunch() {
+      if (this.launching || !this.ready()) return;
+      const f = $("#account-launch-form").elements;
+      const options = {channel:Number(f.channel.value), slot:Number(f.slot.value), radar:f.radar.checked, restart:f.restart.checked};
+      const ids = [...this.launchIds]; let successes = 0;
+      this.launching = true; ids.forEach(id => {this.pending.add(id);this.actionErrors.delete(id);}); this.renderHealth(); this.render();
+      $("#account-launch-cancel").disabled = true;
+      try {
+        for (const id of ids) {
+          const p = this.profiles.find(p => p.id === id); if (!p) continue;
+          try { await post(`/api/autologin/${id}/launch`, {...options, relog:this.inGame(p)}); successes++; }
+          catch (e) { this.actionErrors.set(id, e.message); }
+        }
+      } finally {
+        ids.forEach(id => this.pending.delete(id)); this.launching = false;
+        $("#account-launch-cancel").disabled = false; $("#account-launch-dialog").close();
+        showNotice(`Zlecono uruchomienie / logowanie: ${successes}/${ids.length}.` + (successes < ids.length ? " Błędy są w tabeli." : ""), successes === ids.length ? "ok" : "bad");
+        await hub.refresh(); await this.refresh();
+      }
+    },
 
     async perform(p, fn) {
       if (this.pending.has(p.id)) return;
-      this.actionErrors.delete(p.id);
-      this.pending.add(p.id);
-      this.render();
-      try { await fn(); }
-      catch (e) {
-        this.actionErrors.set(p.id, e.message);
-        showNotice(e.message);
-        const card = this.cards.get(p.id);
-        if (card) { const problem = $(".account-problem", card); problem.textContent = e.message; problem.hidden = false; }
-      } finally {
-        this.pending.delete(p.id);
-        await hub.refresh();
-        await this.refresh();
-      }
+      this.pending.add(p.id); this.actionErrors.delete(p.id); this.render();
+      try { await fn(); } catch (e) { this.actionErrors.set(p.id, e.message); showNotice(e.message); }
+      finally { this.pending.delete(p.id); await hub.refresh(); await this.refresh(); }
     },
-
-    async launch(p) {
-      if (!this.ready()) { showNotice("Sprawdź plik gry i uruchom panel.bat jako administrator."); return; }
-      await this.perform(p, async () => {
-        await post(`/api/autologin/${p.id}/launch`);
-        showNotice(`Uruchamiam i loguję konto „${p.nickname || p.login}”.`, "ok");
-      });
-    },
-
     async toggleBot(p) {
-      const c = hub.clients.find(c => c.pid === p.pid);
-      if (!c) return;
-      const start = c.radar !== "on";
+      const c = this.client(p); if (!c) return; const start = c.radar !== "on";
       await this.perform(p, async () => {
-        // Trwale ustawienie zapobiega samoczynnemu wznowieniu zatrzymanego bota przez petle logowania.
-        await post(`/api/autologin/${p.id}/save`, {radar:start});
-        await post(`/api/clients/${p.pid}/radar/${start ? "start" : "stop"}`);
-        showNotice(start ? "Uruchamiam bota." : "Bot zatrzymany.", "ok");
+        await post(`/api/autologin/${p.id}/save`, {radar:start}); await post(`/api/clients/${p.pid}/radar/${start ? "start" : "stop"}`);
       });
     },
   };
-  $("#account-add").addEventListener("click", () => view.openEditor());
+  view.form.addEventListener("input", () => {view.dirty = true;});
+  view.form.addEventListener("submit", ev => {ev.preventDefault();view.save();});
   $("#account-cancel").addEventListener("click", () => view.closeEditor());
   $("#account-show-password").addEventListener("click", () => {
-    const input = view.form.elements.password;
-    input.type = input.type === "password" ? "text" : "password";
-    const shown = input.type === "text";
-    $("#account-show-password").textContent = shown ? "Ukryj" : "Pokaż";
-    $("#account-show-password").setAttribute("aria-pressed", String(shown));
-    $("#account-show-password").setAttribute("aria-label", shown ? "Ukryj hasło" : "Pokaż hasło");
+    const input = view.form.elements.password; input.type = input.type === "password" ? "text" : "password";
+    $("#account-show-password").textContent = input.type === "text" ? "Ukryj" : "Pokaż"; $("#account-show-password").setAttribute("aria-pressed", String(input.type === "text"));
+    $("#account-show-password").setAttribute("aria-label", input.type === "text" ? "Ukryj hasło" : "Pokaż hasło");
   });
-  view.form.addEventListener("submit", ev => { ev.preventDefault(); view.save(ev.submitter?.value === "launch"); });
+  $("#account-import-toggle").addEventListener("click", () => {
+    if (view.importing) return;
+    if (!$("#account-import").hidden) view.closeImport();
+    else {$("#account-import").hidden = false; $("#account-import-toggle").setAttribute("aria-expanded", "true"); $("#account-import-status").textContent = ""; $("#account-import-text").focus();}
+  });
+  $("#account-import-cancel").addEventListener("click", () => view.closeImport());
+  $("#account-import-form").addEventListener("submit", ev => {ev.preventDefault();view.importAccounts();});
+  $("#account-import-file").addEventListener("change", async ev => {
+    const file = ev.target.files[0]; if (!file) return;
+    try {
+      if (file.size > 256 * 1024) throw new Error("Maksymalny rozmiar pliku: 256 KB.");
+      $("#account-import-text").value = await file.text(); $("#account-import-status").textContent = "Plik wczytany. Kliknij Importuj konta.";
+    } catch (e) {$("#account-import-status").textContent = e.message;}
+  });
+  $("#account-select-all").addEventListener("change", ev => {
+    view.profiles.filter(p => !view.busy(p)).forEach(p => ev.target.checked ? view.selected.add(p.id) : view.selected.delete(p.id)); view.render();
+  });
+  $("#account-run-selected").addEventListener("click", () => view.openLaunch([...view.selected]));
+  $("#account-launch-cancel").addEventListener("click", () => {if (!view.launching) $("#account-launch-dialog").close();});
+  $("#account-launch-dialog").addEventListener("cancel", ev => {if (view.launching) ev.preventDefault();});
+  $("#account-launch-form").addEventListener("submit", ev => {ev.preventDefault();view.submitLaunch();});
   return view;
 }
