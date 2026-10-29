@@ -16,7 +16,8 @@ data/workers/<pid>.json (hub znajduje po nim workery; plik znika przy wyjsciu ra
   podejdz tutaj: name = goto_point {"x","y"} (jednorazowy cel z A*, wylacza farme/podazanie) / goto_cancel
   podazanie: name = follow, value {"leader": "Nick", "distance": N} albo {"leader": null}
   akcje jak klawisze radaru: name = action, value reinject (J) / calibrate (K) / rescan (R) / rebuild_map (M)
-                             oraz guard_release (wznow bota po wstrzymaniu ochrony) / guard_test (test dzwieku)
+                             oraz guard_release (wznow bota po wstrzymaniu ochrony) / guard_test (test dzwieku) /
+                             guard_ack (dzwonek: wiadomosci i wykryci GM przeczytane)
 Recznie:  curl -H "X-Bot-Token: <token>" http://127.0.0.1:<port>/api/snapshot
 """
 import atexit
@@ -73,6 +74,8 @@ OPTIONS = {
     "guard_sound":   (bool,  "guard.sound",   "guard_sound_var",   "_on_guard_opts",     None),
     "guard_radius":  (int,   "guard.radius",  "guard_radius_var",  "_on_guard_opts",     (500, 10000)),
     "guard_resume":  (int,   "guard.resume",  "guard_resume_var",  "_on_guard_opts",     (0, 600)),
+    "guard_msg":     (bool,  "guard.msg",     "guard_msg_var",     "_on_guard_opts",     None),
+    "guard_msg_sound": (bool, "guard.msg_sound", "guard_msg_sound_var", "_on_guard_opts", None),
 }
 _SLIDER_HANDLERS = {"_on_low", "_on_high", "_on_cd", "_on_loot_cd", "_on_loot_radius", "_on_farmr", "_on_movx",
                     "_on_atkx", "_on_area_atk_radius", "_on_cape_period", "_on_cape_mobs"}
@@ -80,7 +83,7 @@ _SLIDER_HANDLERS = {"_on_low", "_on_high", "_on_cd", "_on_loot_cd", "_on_loot_ra
 CHOICES = {"loot_mode": ("human", "instant", "high"), "area_atk_mode": ("safe", "aggro"),
            "guard_react": ("all", "gm")}
 # akcje jednorazowe (klawisze radaru); dluzszy limit - wstrzykniecie DLL / kalibracja trwaja kilka sekund
-ACTIONS = ("reinject", "calibrate", "rescan", "rebuild_map", "guard_release", "guard_test")
+ACTIONS = ("reinject", "calibrate", "rescan", "rebuild_map", "guard_release", "guard_test", "guard_ack")
 ACTION_TIMEOUT = 30.0
 
 
@@ -289,6 +292,8 @@ class BotApi:
                 r.guard.release("recznie z panelu")
             elif value == "guard_test":
                 r.guard.test_sound()
+            elif value == "guard_ack":
+                r.guard.ack()
             else:
                 ma = sys.modules[type(r).__module__].map_assets
                 r._set_map(ma.build_map_image(r.map.name, use_cache=False))

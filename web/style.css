@@ -676,3 +676,27 @@ input[type=checkbox] { accent-color: var(--gold); }
   .compact-toolbar { gap: 5px; }
   .compact-head { align-items: flex-start; }
 }
+
+/* ochrona: dzwonek (nieprzeczytane szepty / GM) i STOP (bot wstrzymany) przy nicku */
+.alerts { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; vertical-align: middle; }
+.alerts:empty { display: none; }
+.alert-ico { position: relative; display: inline-grid; place-items: center; width: 22px; height: 22px;
+  padding: 0; border: 0; background: none; color: #f2cf4a; font: inherit; }
+.alert-ico svg { width: 100%; height: 100%; }
+button.alert-ico { cursor: pointer; }
+.alert-bell { animation: bell-ring 1.6s ease-in-out infinite; transform-origin: 50% 10%; }
+.alert-bell.is-gm { color: var(--danger); }
+.alert-n { position: absolute; top: -5px; right: -7px; min-width: 15px; padding: 0 3px; border-radius: 8px;
+  background: var(--danger); color: #fff; font: 700 10px/15px "Segoe UI", sans-serif; text-align: center; }
+.alert-stop { color: var(--danger); }
+.rail-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.rail-line .alerts { margin-left: 0; gap: 4px; }
+.rail-line .alert-ico { width: 15px; height: 15px; }
+.rail-line .alert-n { top: -4px; right: -6px; min-width: 12px; font-size: 9px; line-height: 12px; }
+.guard-alerts { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 4px; font-size: 13.5px;
+  color: var(--ink-dim); }
+.guard-alerts li.is-unread { color: var(--ink); }
+.guard-alerts li[data-kind="gm"], .guard-alerts li[data-kind="gm_whisper"] { color: var(--danger); }
+@keyframes bell-ring { 0%, 70%, 100% { transform: rotate(0); } 75% { transform: rotate(14deg); }
+  85% { transform: rotate(-12deg); } 92% { transform: rotate(6deg); } }
+@media (prefers-reduced-motion: reduce) { .alert-bell { animation: none; } }

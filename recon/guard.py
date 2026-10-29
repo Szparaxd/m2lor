@@ -17,6 +17,12 @@ podaza za liderem i nie idzie do kolejnego punktu trasy. Zostaje: bieg do biezac
 biezacy punkt trasy, zablokowany cel walki), dobicie zablokowanego celu i mobow, ktore bija postac
 (stanie w miejscu pod atakiem wyglada gorzej) oraz auto-mikstura. Koniec: po `resume` s bez zagrozenia
 (0 = tylko recznie: release()).
+
+Wiadomosci (tylko GameCoreTop - DLL wykonuje Pythona gry): radar podmienia w kliencie metody
+game.GameWindow.OnRecvWhisper / OnRecvWhisperSystemMessage / BINARY_SetTipMessage / BINARY_SetBigMessage
+na wersje, ktore dopisuja linie do logs/msg_<pid>.txt i wolaja oryginal (MSG_HOOK). Radar czyta plik od konca:
+szept = dzwiek + dzwonek w panelu (unread); szept typu GM (WHISPER_TYPE_GM = 5) = jak wykrycie GM (hold).
+Zwykly czat lokalny/krzyk klient obsluguje w C++ (CPythonChat::AppendChat) - Python go nie widzi.
 """
 import json
 import math
@@ -30,6 +36,7 @@ try:
 except ImportError:          # testy poza Windows
     winsound = None
 
+import autopot
 import follow
 
 STEP_EVERY = 0.5             # s: skan graczy (odczyt aktorow /pc/ + nazwy; tani)
@@ -44,12 +51,47 @@ SOUND_REPEAT_GM = 10.0       # s: przy GM w zasiegu dzwiek powtarzany co tyle
 SOUND_REPEAT_PLAYER = 60.0   # s: przy graczu (bez GM) - rzadziej
 LOG_EVERY = 5.0              # s: czytelna linia z lista zagrozen (JSONL leci przy kazdej zmianie)
 REACT_CHOICES = ("all", "gm")
-DEFAULTS = dict(on=True, react="all", stop=True, sound=True, radius=5000, resume=60)
+DEFAULTS = dict(on=True, react="all", stop=True, sound=True, radius=5000, resume=60, msg=True, msg_sound=True)
 RADIUS_RANGE = (500, 10000)
 RESUME_RANGE = (0, 600)
 # (Hz, ms) - GM: wysoki, natarczywy; gracz: dwa krotkie
 SOUND_GM = ((1500, 220), (900, 220), (1500, 220), (900, 220), (1500, 400))
 SOUND_PLAYER = ((880, 150), (0, 80), (880, 150))
+SOUND_MSG = ((1200, 90), (0, 60), (1600, 140))
+
+LOGS_DIR = os.path.dirname(autopot.INV_DUMP_PATH)
+MSG_INSTALL_EVERY = 60.0     # s: ponowne (idempotentne) podpiecie - na wypadek relogu/przeladowania modulu
+MSG_CONFIRM_SEC = 5.0        # s: tyle czekamy na marker po wyslaniu podpiecia
+MSG_MAX_BYTES = 1 << 20      # plik wiadomosci wiekszy -> przycinamy (radar przeczytal juz wszystko)
+WHISPER_TYPE_GM = 5          # PythonChat.h
+ALERTS_MAX = 30
+# Python 2.7 klienta (exec przez DLL w __main__). Wrapper dopisuje "rodzaj<TAB>czas<TAB>argumenty..." i wola oryginal.
+MSG_HOOK = r'''import sys, time
+def _m2lor_msg_install(path, mark):
+	g = sys.modules.get("game")
+	if g is None or not hasattr(g, "GameWindow"):
+		open(mark, "w").write("nogame %.0f" % time.time())
+		return
+	def wrap(fn, kind):
+		def h(self, *a):
+			try:
+				f = open(path, "ab")
+				f.write("%s\t%.3f\t%s\n" % (kind, time.time(), "\t".join([str(x).replace("\t", " ").replace("\n", " ") for x in a])))
+				f.close()
+			except Exception:
+				pass
+			return fn(self, *a)
+		h._m2lor = 1
+		return h
+	n = 0
+	for name, kind in (("OnRecvWhisper", "whisper"), ("OnRecvWhisperSystemMessage", "wsys"), ("BINARY_SetTipMessage", "notice"), ("BINARY_SetBigMessage", "big")):
+		fn = getattr(g.GameWindow, name, None)
+		if fn is not None and not getattr(fn, "_m2lor", 0):
+			setattr(g.GameWindow, name, wrap(fn, kind))
+			n += 1
+	open(mark, "w").write("ok %d %.0f" % (n, time.time()))
+_m2lor_msg_install(r"__PATH__", r"__MARK__")
+'''
 
 
 def load_ignore(path=IGNORE_PATH):
@@ -117,6 +159,8 @@ class Guard:
         self.sound = bool(st["sound"])
         self.radius = float(min(max(float(st["radius"]), RADIUS_RANGE[0]), RADIUS_RANGE[1]))
         self.resume = int(min(max(int(st["resume"]), RESUME_RANGE[0]), RESUME_RANGE[1]))
+        self.msg = bool(st["msg"])
+        self.msg_sound = bool(st["msg_sound"])
         self._save = save_fn
         self.hold = False            # bot wstrzymany (czytaja kroki radaru i Follower)
         self.hold_since = 0.0
@@ -133,11 +177,19 @@ class Guard:
         self._sound_t = 0.0
         self._log_t = 0.0
         self._paused_logged = set()  # kroki, ktorych wstrzymanie juz zalogowano w tym hold
+        # wiadomosci + dzwonek w panelu
+        self.alerts = []             # ostatnie zdarzenia do panelu: dict(t, kind, name, text)
+        self.unread = 0              # nieprzeczytane (szepty + wykryci GM) - dzwonek; zeruje ack()
+        self.msg_status = ""
+        self.msg_count = 0
+        self._msg_sent = 0.0         # kiedy ostatnio wyslano podpiecie
+        self._msg_ok = False         # marker potwierdzil podpiecie w tej sesji radaru
+        self._msg_off = None         # ile bajtow pliku wiadomosci juz przeczytano (None = jeszcze nie)
 
     # ---------- ustawienia ----------
     def settings(self):
         return dict(on=self.on, react=self.react, stop=self.stop, sound=self.sound,
-                    radius=int(self.radius), resume=self.resume)
+                    radius=int(self.radius), resume=self.resume, msg=self.msg, msg_sound=self.msg_sound)
 
     def apply(self, **kw):
         """Zmiana opcji z panelu; zapis do ui_state (wspolne dla wszystkich postaci)."""
@@ -155,6 +207,10 @@ class Guard:
                 self.radius = float(min(max(float(v), RADIUS_RANGE[0]), RADIUS_RANGE[1]))
             elif k == "resume":
                 self.resume = int(min(max(int(float(v)), RESUME_RANGE[0]), RESUME_RANGE[1]))
+            elif k == "msg":
+                self.msg = bool(v)
+            elif k == "msg_sound":
+                self.msg_sound = bool(v)
         after = self.settings()
         if after != before:
             self.r._dbg("ochrona: opcje %s -> %s", before, after)
@@ -222,6 +278,10 @@ class Guard:
             return
         self._last_step = now
         r = self.r
+        try:
+            self._msg_step(now)
+        except Exception as e:
+            r._dbg("ochrona: blad wiadomosci: %r", e)
         if not self.on:
             if self.threats or self._seen:
                 self.threats, self._seen = [], {}
@@ -247,6 +307,8 @@ class Guard:
                     tr.rec("guard", ev="seen", hero=[round(hx), round(hy)], **t)
                 if t["gm"] or self.react == "all":
                     new_react.append(t)
+                if t["gm"]:
+                    self._alert("gm", t["name"], "GM w poblizu (d=%d, %s)" % (t["d"], t["via"]), now)
             else:
                 s["dmin"] = min(s["dmin"], t["d"])
                 if t["gm"] and not s["gm"]:          # logo GM pojawilo sie pozniej (np. wyszedl z ukrycia)
@@ -255,6 +317,7 @@ class Guard:
                     if tr is not None:
                         tr.rec("guard", ev="gm", **t)
                     new_react.append(t)
+                    self._alert("gm", t["name"], "GM w poblizu (d=%d, %s)" % (t["d"], t["via"]), now)
         for key in [k for k in self._seen if k not in cur]:
             s = self._seen.pop(key)
             r._dbg("ochrona: odszedl %s %s (w zasiegu %.0f s, najblizej %.0f)", "GM" if s["gm"] else "gracz",
@@ -350,6 +413,126 @@ class Guard:
             self.r._dbg("ochrona: krok '%s' wstrzymany (%s)", what, self.hold_why)
         return True
 
+    # ---------- wiadomosci ----------
+    def _alert(self, kind, name, text, now=None):
+        self.alerts.append(dict(t=now or time.time(), kind=kind, name=name, text=text))
+        del self.alerts[:-ALERTS_MAX]
+        self.unread += 1
+
+    def ack(self):
+        """Panel: dzwonek przeczytany."""
+        if self.unread:
+            self.r._dbg("ochrona: dzwonek przeczytany (%d)", self.unread)
+        self.unread = 0
+
+    def _msg_paths(self):
+        pid = self.r.pm.process_id
+        return (os.path.join(LOGS_DIR, "msg_%d.txt" % pid), os.path.join(LOGS_DIR, "msg_%d.ok" % pid))
+
+    def _msg_step(self, now):
+        r = self.r
+        if not self.msg:
+            self.msg_status = "wylaczone"
+            return
+        if not getattr(r, "dll_exec", False):
+            self.msg_status = "niedostepne (wymaga GameCoreTop + DLL)"
+            return
+        path, mark = self._msg_paths()
+        if now - self._msg_sent >= (MSG_INSTALL_EVERY if self._msg_ok else MSG_CONFIRM_SEC * 2):
+            self._msg_sent = now
+            code = MSG_HOOK.replace("__PATH__", path).replace("__MARK__", mark)
+            sent = autopot.send_command(r.pm.process_id, code)
+            if not self._msg_ok:
+                r._dbg("ochrona: podpinam wiadomosci w kliencie (wyslano=%s) -> %s", sent, path)
+        if not self._msg_ok:
+            try:
+                st = os.stat(mark)
+                with open(mark, encoding="ascii", errors="replace") as f:
+                    txt = f.read().strip()
+            except OSError:
+                st, txt = None, ""
+            if st is not None and st.st_mtime >= self._msg_sent - 1 and txt.startswith("ok"):
+                self._msg_ok = True
+                r._dbg("ochrona: wiadomosci podpiete (%s)", txt)
+            elif st is not None and txt.startswith("nogame"):
+                self.msg_status = "czekam na wejscie do gry"
+                return
+            else:
+                self.msg_status = "podpinam..."
+                if now - self._msg_sent > MSG_CONFIRM_SEC:
+                    self.msg_status = "brak potwierdzenia z gry (DLL nie wykonuje?)"
+                return
+        self.msg_status = "dziala"
+        self._msg_read(path, now)
+
+    def _msg_read(self, path, now):
+        r = self.r
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            size = 0
+        if self._msg_off is None:            # stare wiadomosci (sprzed startu radaru) pomijamy
+            self._msg_off = size
+            r._dbg("ochrona: plik wiadomosci %s, pomijam %d B sprzed startu", path, size)
+            return
+        if size < self._msg_off:              # plik przyciety/odtworzony
+            self._msg_off = 0
+        if size == self._msg_off:
+            return
+        with open(path, "rb") as f:
+            f.seek(self._msg_off)
+            data = f.read()
+        end = data.rfind(b"\n") + 1           # tylko pelne linie (gra moze dopisywac)
+        self._msg_off += end
+        for raw in data[:end].splitlines():
+            self._on_msg(raw.decode("cp1250", "replace").split("\t"), now)
+        if self._msg_off > MSG_MAX_BYTES:
+            try:
+                open(path, "wb").close()
+                self._msg_off = 0
+            except OSError:
+                pass
+
+    def _on_msg(self, parts, now):
+        r = self.r
+        kind = parts[0] if parts else ""
+        args = parts[2:]
+        tr = r._tr()
+        if kind == "whisper" and len(args) >= 3:
+            try:
+                mode = int(args[0])
+            except ValueError:
+                mode = -1
+            name, line = args[1], "\t".join(args[2:])
+            if line.startswith(name + " : "):    # klient dokleja "Nick : " do tresci szeptu
+                line = line[len(name) + 3:]
+            gm = mode == WHISPER_TYPE_GM
+            self.msg_count += 1
+            r._dbg("ochrona: SZEPT od %s%s (mode=%d): %s", name, " [GM]" if gm else "", mode, line)
+            if tr is not None:
+                tr.rec("guard", ev="whisper", name=name, mode=mode, gm=gm, text=line)
+            self._alert("gm_whisper" if gm else "whisper", name, line, now)
+            if gm and self.on:
+                self._last_threat = now
+                if self.stop and not self.hold:
+                    self._start_hold("szept od GM %s" % name, now)
+            if gm and self.sound:
+                play(SOUND_GM)
+                self._sound_t = now
+            elif self.msg_sound:
+                play(SOUND_MSG)
+        elif kind in ("notice", "big") and args:
+            text = "\t".join(args)
+            r._dbg("ochrona: ogloszenie (%s): %s", kind, text)
+            if tr is not None:
+                tr.rec("guard", ev="notice", big=kind == "big", text=text)
+            self.alerts.append(dict(t=now, kind="notice", name="", text=text))   # bez dzwonka (dla wszystkich)
+            del self.alerts[:-ALERTS_MAX]
+        elif kind == "wsys":
+            r._dbg("ochrona: szept systemowy: %s", "\t".join(args))
+        else:
+            r._dbg("ochrona: nieznana linia wiadomosci: %r", parts)
+
     def test_sound(self):
         play(SOUND_GM)
         self.r._dbg("ochrona: test dzwieku")
@@ -358,4 +541,6 @@ class Guard:
         now = time.time()
         return {"hold": self.hold, "why": self.hold_why, "status": self.status, "count": self.count,
                 "since": round(now - self.hold_since) if self.hold else None,
+                "unread": self.unread, "alerts": [dict(a, ago=round(now - a["t"])) for a in self.alerts[-10:]],
+                "msg": self.msg_status, "msg_count": self.msg_count,
                 "threats": [{k: t[k] for k in ("name", "gm", "via", "d")} for t in self.threats]}

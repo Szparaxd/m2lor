@@ -38,7 +38,8 @@ const TABS = [
     (s) => `Trasa: ${plural(s.status.waypoints, "punkt", "punkty", "punktów")}. Punkty dodajesz klikając na radarze.`],
   ["Buffy", ["autobuff"], (s) => (s.status.buff ? `${s.status.buff}.` : "Wyłączone.") + ` Użyto: ${s.status.buff_count}.`],
   ["Speedhack", ["speed", "move_mult", "atk_mult"], () => "Test: serwer powinien ucinać zbyt szybki ruch."],
-  ["Ochrona", ["guard", "guard_react", "guard_stop", "guard_sound", "guard_radius", "guard_resume"],
+  ["Ochrona", ["guard", "guard_react", "guard_stop", "guard_sound", "guard_radius", "guard_resume", "guard_msg",
+    "guard_msg_sound"],
     (s) => guardText(s.status.guard)],
 ];
 const GUARD_TAB = "Ochrona";
@@ -79,6 +80,8 @@ const OPT = {
   guard_sound: "Sygnał dźwiękowy",
   guard_radius: ["Zasięg wykrywania graczy (GM – cały widok)", "", 100],
   guard_resume: ["Wznów po (0 = tylko ręcznie)", "s", 10],
+  guard_msg: "Wykrywaj wiadomości (szepty i ogłoszenia)",
+  guard_msg_sound: "Sygnał dźwiękowy przy szepcie",
 };
 const CHOICE_PL = {
   human: "Jak gracz", instant: "Naraz w zasięgu", high: "Wszystko widoczne",
@@ -87,7 +90,7 @@ const CHOICE_PL = {
 };
 const ACTION_PL = {
   reinject: "Wstrzyknięcie DLL", calibrate: "Kalibracja", rescan: "Skan potworów", rebuild_map: "Budowa mapy",
-  guard_release: "Wznowienie bota", guard_test: "Test dźwięku",
+  guard_release: "Wznowienie bota", guard_test: "Test dźwięku", guard_ack: "Dzwonek",
 };
 // stan pętli autologowania (recon/autologin.py) -> kolor znacznika
 const AL_STATE_OK = new Set(["ingame"]);
@@ -137,7 +140,52 @@ function guardText(g) {
   const who = g.threats.length ? ` W pobliżu: ${g.threats.map(guardWho).join(", ")}.` : "";
   if (g.hold) return `Bot wstrzymany od ${g.since} s: ${g.status.replace(/^STOP: /, "")}.${who}`;
   if (g.status === "wylaczona") return "Wykrywanie wyłączone.";
-  return (g.threats.length ? "Bez zatrzymania." : "Nikogo w pobliżu.") + who + ` Wykryć od startu: ${g.count}.`;
+  return (g.threats.length ? "Bez zatrzymania." : "Nikogo w pobliżu.") + who + ` Wykryć od startu: ${g.count}.` +
+    (g.msg ? ` Wiadomości: ${g.msg}, odebrano ${g.msg_count}.` : "");
+}
+
+const ICON_BELL = `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 22a2.5 2.5 0 0 0 2.45-2h-4.9A2.5 2.5 0 0 0 12 22zm7-6v-5a7 7 0 0 0-5.5-6.84V3a1.5 1.5 0 0 0-3 0v1.16A7 7 0 0 0 5 11v5l-2 2v1h18v-1z"/></svg>`;
+const ICON_STOP = `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z"/><rect x="6.5" y="10.5" width="11" height="3" rx="1" fill="#fff"/></svg>`;
+const ALERT_KIND_PL = { whisper: "szept", gm_whisper: "szept od GM", gm: "GM w pobliżu", notice: "ogłoszenie" };
+function alertLine(a) {
+  return `${ALERT_KIND_PL[a.kind] || a.kind}${a.name ? ` – ${a.name}` : ""}: ${a.text} (${a.ago} s temu)`;
+}
+// dzwonek (nieprzeczytane szepty / wykryci GM) i STOP (bot wstrzymany) przy nicku postaci.
+// clickable: dzwonek jako przycisk "przeczytane" (poza linkiem w lewej szynie, gdzie cały wiersz jest linkiem).
+function renderAlerts(box, pid, s, clickable) {
+  const g = s && s.status && s.status.guard;
+  const unread = (g && g.unread) || 0;
+  const hold = !!(g && g.hold);
+  const key = `${unread}|${hold}|${g ? g.why : ""}|${g && g.alerts.length ? g.alerts[g.alerts.length - 1].t : ""}`;
+  if (box.dataset.key === key) return;
+  box.dataset.key = key;
+  box.replaceChildren();
+  if (unread) {
+    const gm = g.alerts.slice(-unread).some((a) => a.kind === "gm" || a.kind === "gm_whisper");
+    const b = el(clickable ? "button" : "span", `alert-ico alert-bell${gm ? " is-gm" : ""}`);
+    if (clickable) b.type = "button";
+    b.innerHTML = `${ICON_BELL}<span class="alert-n">${unread > 9 ? "9+" : unread}</span>`;
+    const tip = g.alerts.slice(-Math.min(unread, 5)).map(alertLine).join("\n");
+    b.title = clickable ? `${tip}\nKliknij, aby oznaczyć jako przeczytane.` : tip;
+    b.setAttribute("aria-label", `${unread} nieprzeczytanych: ${gm ? "GM" : "wiadomość"}`);
+    if (clickable) {
+      b.addEventListener("click", async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        b.disabled = true;
+        try { await sendOption(pid, "action", "guard_ack"); } catch (e) { showNotice(`Dzwonek: ${e.message}`); }
+      });
+    }
+    box.append(b);
+  }
+  if (hold) {
+    const st = el("span", "alert-ico alert-stop");
+    st.innerHTML = ICON_STOP;
+    st.title = `Funkcje bota zatrzymane: ${g.status.replace(/^STOP: /, "")}`;
+    st.setAttribute("role", "img");
+    st.setAttribute("aria-label", "Bot wstrzymany");
+    box.append(st);
+  }
 }
 
 function plural(n, one, few, many) {
@@ -169,6 +217,10 @@ function renderIdentity(root, c, s, nickTarget) {
   const id = (s && s.ident) || {};
   setFace($(".portrait img", root), id);
   nickTarget.textContent = id.nick || (c.radar === "on" ? "Postać poza światem" : "Klient gry bez bota");
+  const nickBox = $(".nick", root);
+  let alerts = $(".alerts", nickBox);
+  if (!alerts) { alerts = el("span", "alerts"); nickBox.append(alerts); }
+  renderAlerts(alerts, c.pid, s, true);
   $(".meta", root).textContent = s
     ? [className(id), id.level ? `poziom ${id.level}` : null, mapLabel(s.map)].filter(Boolean).join(", ")
     : "Uruchom bota, gdy postać będzie już w świecie gry.";
@@ -256,7 +308,7 @@ const rail = {
       let li = this.items.get(c.pid);
       if (!li) {
         li = el("li");
-        li.innerHTML = `<a><span class="portrait mini"><img alt=""></span><span class="rail-who"><span class="rail-nick"></span><span class="rail-hp"><span></span></span></span><span class="dot" aria-hidden="true"></span></a>`;
+        li.innerHTML = `<a><span class="portrait mini"><img alt=""></span><span class="rail-who"><span class="rail-line"><span class="rail-nick"></span><span class="alerts"></span></span><span class="rail-hp"><span></span></span></span><span class="dot" aria-hidden="true"></span></a>`;
         $("a", li).href = `#/p/${c.pid}`;
         this.items.set(c.pid, li);
         this.list.append(li);
@@ -267,6 +319,7 @@ const rail = {
       $(".rail-nick", li).textContent = id.nick || `PID ${c.pid}`;
       $(".rail-hp span", li).style.width = s && s.hp.max ? `${Math.min(100, (100 * s.hp.cur) / s.hp.max)}%` : "0";
       $(".dot", li).dataset.state = c.radar;
+      renderAlerts($(".alerts", li), c.pid, s, false);
       $("a", li).setAttribute("aria-current", String(detailView.pid === c.pid && current === "detail"));
     }
     for (const [pid, li] of this.items) if (!seen.has(pid)) { li.remove(); this.items.delete(pid); }
@@ -569,7 +622,7 @@ const detailView = {
   render() {
     const s = this.snap, c = this.client;
     const head = $(".detail-head", this.root);
-    renderIdentity(head, c, s, $(".nick", head));
+    renderIdentity(head, c, s, $(".nick-text", head));
     $("#tools").hidden = !s;
     document.title = `${(s && s.ident.nick) || "Postać"} – panel bota`;
     this.renderChips(s);
@@ -602,7 +655,7 @@ const detailView = {
       const g = st.guard;
       if (g && g.status !== "wylaczona") {
         const gm = g.threats.some((t) => t.gm);
-        chips.push(g.hold ? [`Wstrzymany: ${gm ? "GM" : "gracz"} w pobliżu`, "bad"]
+        chips.push(g.hold ? [`Wstrzymany: ${g.why}`, "bad"]
           : g.threats.length ? [`${gm ? "GM" : "Gracz"} w pobliżu`, "warn"] : ["Nikogo w pobliżu", "ok"]);
       }
     }
@@ -668,10 +721,14 @@ const detailView = {
         <div class="form-actions">
           <button type="button" class="btn btn-gold" data-guard="guard_release">Wznów bota teraz</button>
           <button type="button" class="btn" data-guard="guard_test">Test dźwięku</button>
+          <button type="button" class="btn" data-guard="guard_ack">Oznacz jako przeczytane</button>
         </div>
+        <ul class="guard-alerts"></ul>
         <p class="hint">GM jest rozpoznawany po logo GM nad postacią (w całym zasięgu widzenia) albo po nicku
         z prefiksem w nawiasie, np. [GM]. Niewidzialnego GM nie da się wykryć. Twoje postacie z działającym botem
         są pomijane; inne nicki do pominięcia wpisz w data/guard_ignore.txt (jeden na linię).
+        Szepty i ogłoszenia są odczytywane tylko w GameCoreTop. Szept od GM zatrzymuje bota jak wykrycie GM.
+        Zwykłego czatu lokalnego gra nie przekazuje skryptom, więc nie jest wykrywany.
         Po wykryciu bot nie bierze nowych celów, nie zbiera i nie używa ataku pakietem, peleryny, buffów,
         speedhacka ani podążania. Kończy bieg do bieżącego celu i bicie potworów, które z nim walczą.
         Auto-mikstura działa dalej.</p>`;
@@ -690,6 +747,21 @@ const detailView = {
     const g = s.status.guard;
     const rel = $("[data-guard=guard_release]", box);
     if (!rel.matches(":focus")) rel.disabled = !(g && g.hold);
+    const ack = $("[data-guard=guard_ack]", box);
+    if (!ack.matches(":focus")) ack.disabled = !(g && g.unread);
+    const list = $(".guard-alerts", box);
+    const alerts = (g && g.alerts) || [];
+    const lkey = alerts.map((a) => a.t).join() + `|${g ? g.unread : 0}`;
+    if (list.dataset.key !== lkey) {
+      list.dataset.key = lkey;
+      list.replaceChildren(...alerts.slice().reverse().map((a, i) => {
+        const li = el("li", null, alertLine(a));
+        li.dataset.kind = a.kind;
+        if (i < g.unread && a.kind !== "notice") li.classList.add("is-unread");
+        return li;
+      }));
+    }
+    list.hidden = !alerts.length;
   },
 
   makeControl(name, spec) {

@@ -827,6 +827,8 @@ class RadarMap:
         self.guard_sound_var = tk.BooleanVar(value=self.guard.sound)
         self.guard_radius_var = tk.IntVar(value=int(self.guard.radius))
         self.guard_resume_var = tk.IntVar(value=int(self.guard.resume))
+        self.guard_msg_var = tk.BooleanVar(value=self.guard.msg)
+        self.guard_msg_sound_var = tk.BooleanVar(value=self.guard.msg_sound)
 
         self.canvas = tk.Canvas(root, width=CANVAS, height=CANVAS, bg="#0b0f0b", highlightthickness=0)
         panel = tk.Frame(root, bg="#0b0f0b")
@@ -1410,7 +1412,8 @@ class RadarMap:
         """Wszystkie opcje ochrony naraz (checkboxy i suwaki czytaja swoje zmienne tk)."""
         self.guard.apply(on=self.guard_var.get(), react=self.guard_react_var.get(), stop=self.guard_stop_var.get(),
                          sound=self.guard_sound_var.get(), radius=self.guard_radius_var.get(),
-                         resume=self.guard_resume_var.get())
+                         resume=self.guard_resume_var.get(), msg=self.guard_msg_var.get(),
+                         msg_sound=self.guard_msg_sound_var.get())
 
     def _on_speed_check(self):
         self.speed_on = bool(self.speed_var.get())

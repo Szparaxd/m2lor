@@ -159,6 +159,67 @@ class GuardDetectTest(unittest.TestCase):
             self.assertEqual(play.call_args[0][0], guard.SOUND_GM)
 
 
+class GuardMessageTest(unittest.TestCase):
+    """Wiadomosci z gry: plik logs/msg_<pid>.txt pisany przez podpiete metody GameWindow."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.path = str(Path(self.dir.name) / "msg.txt")
+        self.r = fake_radar([])
+        self.g = make_guard(self.r)
+        self.g._msg_off = None
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def write(self, *fields):
+        with open(self.path, "ab") as f:
+            f.write("\t".join(fields).encode("cp1250") + b"\n")
+
+    def test_old_messages_skipped_then_whisper_rings(self):
+        self.write("whisper", "1.0", "0", "Stary", "sprzed startu")
+        with mock.patch.object(guard, "play") as play:
+            self.g._msg_read(self.path, 10.0)
+            self.assertEqual(self.g.unread, 0)
+            self.write("whisper", "2.0", "0", "Obcy", "Cześć, jesteś botem?")
+            self.g._msg_read(self.path, 11.0)
+        self.assertEqual(self.g.unread, 1)
+        self.assertEqual(self.g.alerts[-1]["name"], "Obcy")
+        self.assertIn("Cześć", self.g.alerts[-1]["text"])
+        play.assert_called_once_with(guard.SOUND_MSG)
+        self.assertFalse(self.g.hold)          # zwykly szept nie zatrzymuje bota
+
+    def test_gm_whisper_holds_and_plays_gm_sound(self):
+        self.g.sound = True
+        self.g._msg_read(self.path, 1.0)
+        self.write("whisper", "2.0", str(guard.WHISPER_TYPE_GM), "GameCoreTop", "sprawdzenie")
+        with mock.patch.object(guard, "play") as play:
+            self.g._msg_read(self.path, 2.0)
+        self.assertTrue(self.g.hold)
+        self.assertIn("szept od GM", self.g.hold_why)
+        self.assertEqual(self.g.alerts[-1]["kind"], "gm_whisper")
+        play.assert_called_once_with(guard.SOUND_GM)
+        self.g.ack()
+        self.assertEqual(self.g.unread, 0)
+
+    def test_partial_line_waits_and_notice_has_no_bell(self):
+        self.g._msg_read(self.path, 1.0)
+        with open(self.path, "ab") as f:
+            f.write(b"notice\t2.0\tSerwer restart za 5 min\nwhisper\t3.0\t0\tX\tniedoko")
+        with mock.patch.object(guard, "play"):
+            self.g._msg_read(self.path, 2.0)
+            self.assertEqual(self.g.unread, 0)
+            self.assertEqual(self.g.alerts[-1]["kind"], "notice")
+            with open(self.path, "ab") as f:
+                f.write(b"nczone\n")
+            self.g._msg_read(self.path, 3.0)
+        self.assertEqual(self.g.unread, 1)
+        self.assertEqual(self.g.alerts[-1]["text"], "niedokonczone")
+
+    def test_hook_compiles_as_python(self):
+        compile(guard.MSG_HOOK.replace("__PATH__", "a").replace("__MARK__", "b"), "hook", "exec")
+
+
 class GuardCombatTest(unittest.TestCase):
     """_combat_tick w trakcie wstrzymania: bez nowego celu z pick_fn, ale obrona przed napastnikiem."""
 
@@ -211,6 +272,8 @@ class GuardApiTest(unittest.TestCase):
             self.assertIn(name, botapi.OPTIONS)
         self.assertEqual(botapi.CHOICES["guard_react"], guard.REACT_CHOICES)
         self.assertIn("guard_release", botapi.ACTIONS)
+        self.assertIn("guard_ack", botapi.ACTIONS)
+        self.assertIn("guard_msg", botapi.OPTIONS)
 
 
 if __name__ == "__main__":
