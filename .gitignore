@@ -53,3 +53,8 @@ data/beacons/
 data/autologin.json
 data/autologin.json.tmp
 logs/autologin_*.txt
+
+# Znaczniki mozliwosci DLL (per PID) i dzienniki sesji radaru - generowane w trakcie dzialania
+logs/caps_*.ok
+logs/radar_*.txt
+data/logs/

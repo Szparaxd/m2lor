@@ -309,6 +309,7 @@ LOOT_TP_MAX = 2400.0      # jedn. - najdalszy skok (klasyczny limit serwera Meti
 LOOT_TP_EVERY = 0.35      # s - odstep miedzy skokami (jedno skupisko na skok)
 # Auto-chodzenie (funkcja 3): postac idzie po liscie waypointow (wsp. swiata). Ruch natywny przez
 # hook per-klatka (vCore): DLL wola NEW_MoveToDestPixelPositionDirection. Pakiety ruchu leca same.
+GOTO_POINT_TIMEOUT = 180.0  # s: "podejdz tutaj" - po tym czasie bez dojscia rezygnuj (log)
 WALK_REACH = 250.0        # jedn. swiata: tak blisko celu/wezla = idz dalej (wiekszy = plynniej, mniej stopow)
 WALK_RESEND = 0.3         # s: co ile ponawiac !goto do biezacego celu (czesciej = plynniej)
 WALK_PLAN_RETRY = 1.0     # s: po NIEUDANYM A* (brak trasy) ponow dopiero po tym czasie (nie co tick)
@@ -374,6 +375,7 @@ FARM_HANDOFF = 650.0      # tak blisko, ale bez postepu FARM_HANDOFF_SEC (duzy b
 FARM_HANDOFF_SEC = 2.0
 FARM_FIGHT_TIMEOUT = 25.0     # s w walce wrecz BEZ DOWODU TRAFIENIA (od ostatniego; mob) -> cel-widmo, porzuc
 FARM_FIGHT_TIMEOUT_BIG = 120.0  # j.w. dla metinow/bossow (dlugo sie bija)
+WALK_BIG_FIGHT_MAX = 180.0      # s: w trybie chodzenia (bez farmy) max laczny czas na jednym metinie/bossie
 # Obrona: moby, ktore BIJA postac, maja pierwszenstwo przed kazdym innym celem farmy (inaczej postac biegla do
 # dalekiego moba/bossa, a najblizsze ja bily). Napastnik = mob w AGGRO_RANGE grajacy animacje ataku albo stojacy
 # tuz przy postaci (AGGRO_CLOSE). Animacja ataku jest przerywana -> pamietamy napastnika AGGRO_MEMORY s.
@@ -654,6 +656,7 @@ class RadarMap:
         self.autowalk_on = False
         self.walk_fight = False       # w drodze zatrzymaj sie i zbij metina/bossa w poblizu
         self.path = []                # [(wx, wy)] - waypointy uzytkownika (Ctrl+klik)
+        self._goto_point = None       # (wx, wy, t_start) - jednorazowe "podejdz tutaj" z panelu (PPM na mapie)
         self.walk_idx = 0
         self._last_goto = 0.0
         self._walk_prog = None        # (czas, dist) - do wykrywania utkniecia (wymusza replan)
@@ -678,6 +681,8 @@ class RadarMap:
         self.atk_mult = 1.0
         self.self_actor = None        # wskaznik CActorInstance wlasnej postaci (do zapisu predkosci)
         self._dbg_lock = threading.Lock()   # dziennik diagnostyczny (WALK_DEBUG)
+        self._loop_err_t = {}               # tag petli -> czas ostatniego pelnego wpisu bledu (throttle)
+        self._loop_err_n = {}               # tag petli -> licznik bledow
         self._dbg_f = None
         self._dbg_t0 = 0.0
         self._dbg_last_goto = None   # (czas, wx, wy, powod) ostatniego !goto
@@ -972,6 +977,52 @@ class RadarMap:
                 tr.text(fmt % args if args else fmt)
             except Exception:
                 pass
+
+    def _on_death_change(self, dead):
+        """Zgon/wskrzeszenie postaci (HP z tablicy punktow): log z kontekstem walki + zwolnienie celu.
+        Bot nic nie robi az do wskrzeszenia (restart w miescie/na miejscu robi gracz)."""
+        hx, hy = self._hero_world()
+        tgt = self._engaged_vid
+        if dead:
+            self._dbg("SMIERC postaci @(%s,%s): cel VID %s (duzy=%s), farm=%s walk=%s atak_pakietem=%s, "
+                      "mikstur wypito %d, ostatnia %.1f s temu - wstrzymuje walke/chodzenie/zbieranie",
+                      None if hx is None else round(hx), None if hy is None else round(hy), tgt,
+                      self._engaged_big, self.farm_on, self.autowalk_on, self.area_atk_on, self.pot_count,
+                      time.time() - self._last_pot if self._last_pot else -1)
+            try:
+                self._clear_autoattack()
+                self._end_target()
+            except Exception as e:
+                self._dbg("SMIERC: blad zwalniania celu: %r", e)
+            self._combat_status = "postac martwa - czekam na wskrzeszenie"
+        else:
+            self._dbg("WSKRZESZENIE @(%s,%s) HP %d/%d - wznawiam", None if hx is None else round(hx),
+                      None if hy is None else round(hy), self._hp, self._mhp)
+            self._combat_status = ""
+        tr = self._tr()
+        if tr is not None:
+            tr.rec("death" if dead else "revive", hero=bottrace.ipt((hx, hy)) if hx is not None else None,
+                   vid=tgt, hp=self._hp, mhp=self._mhp, pots=self.pot_count)
+
+    def _loop_err(self, tag, e):
+        """Wyjatek w kroku petli: konsola + walk.log (pelny traceback, max 1x/5 s na tag) + JSONL co raz.
+        Wczesniej tylko print(e) - blad 'Trace.rec() got multiple values' nie byl widoczny w dzienniku."""
+        import traceback
+        tb = traceback.format_exc()
+        now = time.time()
+        last = self._loop_err_t.get(tag, 0.0)
+        cnt = self._loop_err_n.get(tag, 0) + 1
+        self._loop_err_n[tag] = cnt
+        tr = self._tr()
+        if tr is not None:
+            try:
+                tr.rec("loop_err", tag=tag, err=repr(e), n=cnt)
+            except Exception:
+                pass
+        if now - last >= 5.0:
+            self._loop_err_t[tag] = now
+            print("[%s] blad petli (#%d): %r" % (tag, cnt, e))
+            self._dbg("BLAD petli [%s] #%d: %r" + chr(10) + "%s", tag, cnt, e, tb.rstrip())
 
     def _tr(self):
         """Slad sesji (tworzony leniwie przy pierwszym zapisie) albo None gdy WALK_DEBUG wylaczony."""
@@ -2116,7 +2167,8 @@ class RadarMap:
     def _autopot_loop(self):
         """Dedykowana petla: czyta HP i pije co POTION_POLL (szybka reakcja, niezaleznie od rysowania,
         ktore chodzi co 120 ms). Dzieki temu lek leci zaraz po spadku HP, a nie raz na klatke/1.5 s."""
-        last_status, t_end = "", time.time()
+        last_status, last_area, last_area_full, last_area_t, t_end = "", None, None, 0.0, time.time()
+        was_dead = False
         while True:
             time.sleep(POTION_POLL)
             t_start = time.time()
@@ -2139,40 +2191,57 @@ class RadarMap:
             try:
                 self._autopot_step()
             except Exception as e:
-                print("[mikstura] blad petli:", e)
+                self._loop_err("mikstura", e)
+            dead = (self._hp <= 0) if self._pts_valid else was_dead   # niewazny odczyt: stan bez zmian
+            if dead != was_dead:
+                was_dead = dead
+                self._on_death_change(dead)
+            if dead:                                # martwy: zadnych rozkazow ruchu/ataku/zbierania
+                continue
             try:
                 self._autoloot_step()
             except Exception as e:
-                print("[loot] blad petli:", e)
+                self._loop_err("loot", e)
             try:
                 self._autowalk_step()
             except Exception as e:
-                print("[walk] blad petli:", e)
+                self._loop_err("walk", e)
             try:
                 self._speed_step()
             except Exception as e:
-                print("[speed] blad petli:", e)
+                self._loop_err("speed", e)
             try:
                 self._farm_step()
             except Exception as e:
-                print("[farm] blad petli:", e)
+                self._loop_err("farm", e)
             try:
                 self._area_attack_step()
             except Exception as e:
-                print("[atak] blad petli:", e)
+                self._loop_err("atak", e)
+            area_key = (self._area_atk_status or "").split(" ", 1)[0]
+            if self.area_atk_on and (area_key != last_area or time.time() - last_area_t >= 2.0) \
+                    and self._area_atk_status != last_area_full:
+                last_area, last_area_t = area_key, time.time()   # powod bezczynnosci/stan ataku pakietem
+                last_area_full = self._area_atk_status
+                self._dbg("atak pakietem: %s (attack_ok=%s tattack_ok=%s exec=%s)", last_area_full or "-",
+                          self._attack_ok, self._tattack_ok, self.dll_exec)
+                tr = self._tr()
+                if tr is not None:
+                    tr.rec("area_status", s=last_area_full, attack_ok=self._attack_ok,
+                           tattack_ok=self._tattack_ok, exec=self.dll_exec)
             try:
                 self._cape_step()
             except Exception as e:
-                print("[peleryna] blad petli:", e)
+                self._loop_err("peleryna", e)
             try:
                 self._autobuff_step()
             except Exception as e:
-                print("[buff] blad petli:", e)
+                self._loop_err("buff", e)
             try:
                 if self.farm_on or self.autowalk_on:
                     self._remount_step()
             except Exception as e:
-                print("[kon] blad petli:", e)
+                self._loop_err("kon", e)
             t_end = time.time()
             if t_end - t_start > 0.15:
                 self._dbg("krok petli %.0f ms", (t_end - t_start) * 1000)
@@ -2461,6 +2530,9 @@ class RadarMap:
                     why = "klient nie dochodzi (d=%.0f bez zmian %.0fs)" % (d, MELEE_STALL_SEC)
                 elif leash_fn is not None and leash_fn(tx, ty, self._engaged_big):
                     why = "uciekl za daleko (d=%.0f)" % d
+                elif (self._engaged_big and self.autowalk_on and not self.farm_on and self._engaged_t0
+                      and now - self._engaged_t0 > WALK_BIG_FIGHT_MAX):
+                    why = "chodzenie: %.0fs na jednym duzym celu - wracam na trase" % (now - self._engaged_t0)
                 elif self._in_melee and idle > idle_lim:
                     # klient ma VID, ale ani nie atakuje, ani cel nie dostaje -> nie moze uderzyc z tego miejsca
                     if self._side_tries >= MELEE_SIDE_TRIES:
@@ -3072,9 +3144,14 @@ class RadarMap:
         Gdy brak trasy (cel nieosiagalny) - jedzie wprost (best effort), A* ponawia co WALK_PLAN_RETRY.
         Przy wlaczonej farmie chodzenie czeka (farma trzyma postac w okregu). vCore: hook; GameCoreTop: pending."""
         path = self.path                               # snapshot: GUI podmienia liste (nie mutuje jej)
-        if not self.autowalk_on or not path:
+        gp = self._goto_point                          # "podejdz tutaj": jednorazowy cel ma pierwszenstwo
+        if gp is not None:
+            path = [(gp[0], gp[1])]
+        elif not self.autowalk_on or not path:
             return
         if not (self.native_drink or self.dll_exec):   # vCore: hook; GameCoreTop: pending-call
+            if gp is not None:
+                self._goto_point_done("brak drogi wykonania (DLL)")
             return
         if self.farm_on or self._looting:              # farm/zbieranie i chodzenie walczylyby o !goto
             return
@@ -3082,6 +3159,13 @@ class RadarMap:
         if hx is None:
             return
         now = time.time()
+        if gp is not None:
+            if math.hypot(gp[0] - hx, gp[1] - hy) < WALK_REACH:
+                self._goto_point_done("dotarlem", hx, hy)
+                return
+            if now - gp[2] > GOTO_POINT_TIMEOUT:
+                self._goto_point_done("limit czasu %.0f s" % GOTO_POINT_TIMEOUT, hx, hy)
+                return
         self.collision.set_mapout(self.mapout_obj)
         self.collision.refresh()
         # opcja: w drodze zatrzymaj sie i zbij metina/bossa/specjalnego w poblizu (zamek na cel).
@@ -3100,10 +3184,14 @@ class RadarMap:
                 self._route = []                # po walce trasa od nowa (stara zostala za plecami)
                 self._last_plan = 0.0
                 return
-        self.walk_idx %= len(path)
-        tx, ty = path[self.walk_idx]
+        if gp is not None:
+            tx, ty = path[0]
+            adv = len(path)                            # bez przechodzenia po waypointach trasy
+        else:
+            self.walk_idx %= len(path)
+            tx, ty = path[self.walk_idx]
+            adv = 0
         # przejdz przez osiagniete waypointy BEZ zatrzymania (od razu kieruj do nastepnego = plynnie)
-        adv = 0
         while math.hypot(tx - hx, ty - hy) < WALK_REACH and adv < len(path):
             self.walk_idx = (self.walk_idx + 1) % len(path)
             tx, ty = path[self.walk_idx]
@@ -3130,8 +3218,10 @@ class RadarMap:
             t0 = time.time()
             hard, blobs = self._hard_obstacles(hx, hy, tx, ty)
             p = self.collision.find_path(hx, hy, tx, ty, extra_blocked=obst, hard_blocked=hard, hard_blobs=blobs)
-            self._trace_plan("walk", hx, hy, tx, ty, obst, hard, blobs, p, (time.time() - t0) * 1000)
-            self._dbg("plan wp%d d=%.0f: %s, %.0f ms, przeszkod %d (twardych %d)", self.walk_idx + 1, d,
+            self._trace_plan("goto_point" if gp is not None else "walk", hx, hy, tx, ty, obst, hard, blobs, p,
+                             (time.time() - t0) * 1000)
+            self._dbg("plan %s d=%.0f: %s, %.0f ms, przeszkod %d (twardych %d)",
+                      "podejdz" if gp is not None else "wp%d" % (self.walk_idx + 1), d,
                       ("%d wezlow" % len(p)) if p else "BRAK TRASY", (time.time() - t0) * 1000, len(obst),
                       len(hard) + len(blobs))
             self._last_plan = now
@@ -3157,8 +3247,41 @@ class RadarMap:
         if self._stuck_nudge(hx, hy, tgt[0], tgt[1]):   # wbity w moba/przeszkode -> krok w bok (trzymany)
             return
         if now - self._last_goto >= WALK_RESEND:     # ponawiaj biezacy cel (keep-alive/korekta)
-            self._goto(tgt[0], tgt[1], "walk", hx, hy)
+            self._goto(tgt[0], tgt[1], "point" if gp is not None else "walk", hx, hy)
             self._last_goto = now
+
+    def set_goto_point(self, wx, wy):
+        """'Podejdz tutaj' z panelu: jednorazowy cel z planowaniem A* (jak waypoint), niezalezny od trasy.
+        Ma pierwszenstwo przed trasa auto-chodzenia; po dojsciu/limicie czasu trasa wraca do pracy."""
+        hx, hy = self._hero_world()
+        self._goto_point = (float(wx), float(wy), time.time())
+        self._route = []
+        self._last_plan = 0.0
+        self._walk_prog = None
+        d = math.hypot(wx - hx, wy - hy) if hx is not None else -1
+        self._dbg("podejdz START -> (%.0f,%.0f) d=%.0f (farm=%s loot=%s autowalk=%s exec=%s native=%s)",
+                  wx, wy, d, self.farm_on, self._looting, self.autowalk_on, self.dll_exec, self.native_drink)
+        tr = self._tr()
+        if tr is not None:
+            tr.rec("goto_point", ev="start", to=bottrace.ipt((wx, wy)),
+                   hero=bottrace.ipt((hx, hy)) if hx is not None else None, d=round(d),
+                   farm=self.farm_on, autowalk=self.autowalk_on)
+
+    def _goto_point_done(self, why, hx=None, hy=None):
+        gp = self._goto_point
+        self._goto_point = None
+        self._route = []
+        self._last_plan = 0.0
+        self._walk_prog = None
+        if gp is None:
+            return
+        d = math.hypot(gp[0] - hx, gp[1] - hy) if hx is not None else -1
+        self._dbg("podejdz KONIEC: %s; cel (%.0f,%.0f) d=%.0f po %.1f s", why, gp[0], gp[1], d, time.time() - gp[2])
+        tr = self._tr()
+        if tr is not None:
+            tr.rec("goto_point", ev="end", why=why, to=bottrace.ipt(gp[:2]),
+                   hero=bottrace.ipt((hx, hy)) if hx is not None else None, d=round(d),
+                   sec=round(time.time() - gp[2], 2))
 
     def _draw_collision(self, c, hx, hy):
         """Rysuje zablokowane pola (ATTRIBUTE_BLOCK) wokol gracza jako czerwone kwadraty - jak siatka
@@ -3670,6 +3793,8 @@ class RadarMap:
                 self._pot_pause_until = now + POTION_NOGAIN_PAUSE
                 print("[mikstura] %d mikstur bez wzrostu HP (%d/%d) - pauza %.0f s"
                       % (POTION_NOGAIN_LIMIT, hp, mhp, POTION_NOGAIN_PAUSE))
+                self._dbg("mikstura: %d bez wzrostu HP (%d/%d) - pauza %.0f s (koniec mikstur w EQ?)",
+                          POTION_NOGAIN_LIMIT, hp, mhp, POTION_NOGAIN_PAUSE)
         if hp <= 0:                       # martwy - nie pijemy (i tak nie zadziala, marnuje mikstury)
             self._healing = False
             self._pot_dead = True
@@ -3687,8 +3812,8 @@ class RadarMap:
             self._healing = False
         if not (self.autopot_on and self._healing):
             return
-        if 100.0 * (hp + self._pot_expect) / mhp >= self.pot_high:
-            return                        # wypite mikstury jeszcze lecza - wystarczy
+        if pct >= POTION_CRIT_PCT and 100.0 * (hp + self._pot_expect) / mhp >= self.pot_high:
+            return                        # wypite mikstury jeszcze lecza - wystarczy (poza stanem krytycznym)
         if now < self._pot_pause_until or now < self._pot_next_ok:
             return
         if now - self._last_pot < self.pot_cd:
@@ -3716,7 +3841,9 @@ class RadarMap:
                 self._pot_heal_seen = self._pot_gain
             self._pot_gain = 0
             self._last_pot = now
-            heal = POTION_HEAL.get(self.pot_vnums[0], POTION_HEAL_SLOT) if via == "EQ" else POTION_HEAL_SLOT
+            # nie wiemy, ktora z zaznaczonych mikstur DLL znalazla w EQ - zakladamy NAJSLABSZA (ostroznie)
+            heal = (min(POTION_HEAL.get(v, POTION_HEAL_SLOT) for v in self.pot_vnums)
+                    if via == "EQ" else POTION_HEAL_SLOT)
             if self._pot_heal_seen:
                 heal = min(heal, self._pot_heal_seen)
             self._pot_expect = min(self._pot_expect + heal, mhp - hp)   # serwer i tak tnie do maxHP
@@ -3727,6 +3854,16 @@ class RadarMap:
             self._pot_times.append(now)
             self.pot_count += 1
             print("[mikstura] HP %d/%d (%.0f%%) -> %s" % (hp, mhp, pct, via))
+            self._dbg("mikstura #%d: HP %d/%d (%.0f%%) via=%s w_drodze=%d leczenie~%d (zmierzone %s) tempo %d/%.0fs",
+                      self.pot_count, hp, mhp, pct, via, self._pot_expect, heal, self._pot_heal_seen or "-",
+                      len(self._pot_times), POTION_RATE_WINDOW)
+            tr = self._tr()
+            if tr is not None:
+                tr.rec("pot", hp=hp, mhp=mhp, via=via, expect=self._pot_expect, heal=heal,
+                       seen=self._pot_heal_seen, rate=len(self._pot_times), n=self.pot_count)
+        elif self.autopot_on:
+            self._dbg("mikstura: NIE wypita (exec=%s native=%s vnums=%s hwnd=%s) HP %d/%d",
+                      self.dll_exec, self.native_drink, self.pot_vnums, bool(self.hwnd), hp, mhp)
 
     def _mount_check(self):
         """Czy jedziemy na wierzchowcu: aktor-kon (z rescan) blizej MOUNT_DIST od wlasnej postaci.

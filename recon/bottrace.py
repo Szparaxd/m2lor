@@ -69,8 +69,12 @@ class Trace:
         with self._lock:
             self._log.write("%9.3f %s\n" % (self._t(), line))
 
-    def rec(self, kind, **fields):
-        row = {"t": self._t(), "k": kind}
+    def rec(self, _k, /, **fields):
+        # _k tylko pozycyjnie: wywolujacy przekazuja tez pole 'kind=' (np. rec("plan", kind=...)).
+        # Pole 'k' nie moze nadpisac typu rekordu - trafia jako 'k_'.
+        row = {"t": self._t(), "k": _k}
+        if "k" in fields:
+            fields["k_"] = fields.pop("k")
         row.update(fields)
         s = json.dumps(row, default=_default, ensure_ascii=False, separators=(",", ":"))
         with self._lock:

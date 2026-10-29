@@ -491,6 +491,7 @@ const detailView = {
   client: { radar: "off", window_visible: true },
   tab: "Mikstura",
   viewWorld: 12000,          // ile jednostek świata mieści szerokość radaru (1 px mapy = 100 jedn.)
+  center: null,              // null = widok śledzi postać; {x, y} = mapa przesunięta ręcznie / cała mapa
   showNames: true,
   maps: new Map(),           // nazwa mapy -> HTMLImageElement
   controls: new Map(),       // nazwa opcji -> {el, set(value)}
@@ -501,6 +502,7 @@ const detailView = {
     if (this.pid !== pid) {
       this.pid = pid;
       this.snap = null;
+      this.center = null;
       this.tabsKey = this.buffsKey = "";
       this.tabs.replaceChildren();
       this.panel.replaceChildren();
@@ -832,17 +834,26 @@ const detailView = {
     if (!s || !s.pos) return;
 
     const hx = s.pos.x, hy = s.pos.y;
+    const { x: cx, y: cy } = this.viewCenter();   // środek widoku: postać albo ręcznie przesunięty punkt
     const k = W / this.viewWorld;                 // px canvasu na jednostkę świata
-    const toX = (wx) => W / 2 + (wx - hx) * k;
-    const toY = (wy) => H / 2 + (wy - hy) * k;
+    const toX = (wx) => W / 2 + (wx - cx) * k;
+    const toY = (wy) => H / 2 + (wy - cy) * k;
     const r = (n) => n * dpr;
+    const heroX = toX(hx), heroY = toY(hy);
 
-    // tło: wycinek minimapy (1 px obrazu = 100 jednostek świata, współrzędne lokalne mapy)
+    // tło: wycinek minimapy (1 px obrazu = 100 jednostek świata, współrzędne lokalne mapy).
+    // Prostokąt źródłowy wychodzący poza obraz przycinamy do obrazu (inaczej przy całej mapie bywa pomijany).
     const img = this.mapImage(s.map);
     if (img) {
       const vw = this.viewWorld, vh = this.viewWorld * (H / W);
+      const sx0 = (cx - vw / 2) / 100, sy0 = (cy - vh / 2) / 100, sw = vw / 100, sh = vh / 100;
+      const ax = Math.max(0, sx0), ay = Math.max(0, sy0);
+      const bx = Math.min(img.naturalWidth, sx0 + sw), by = Math.min(img.naturalHeight, sy0 + sh);
       g.imageSmoothingEnabled = true;
-      g.drawImage(img, (hx - vw / 2) / 100, (hy - vh / 2) / 100, vw / 100, vh / 100, 0, 0, W, H);
+      if (bx > ax && by > ay) {
+        g.drawImage(img, ax, ay, bx - ax, by - ay,
+          (ax - sx0) / sw * W, (ay - sy0) / sh * H, (bx - ax) / sw * W, (by - ay) / sh * H);
+      }
       g.fillStyle = "rgba(18, 13, 11, 0.25)";      // lekko przyciemnione, żeby znaczniki były czytelne
       g.fillRect(0, 0, W, H);
     }
@@ -859,7 +870,7 @@ const detailView = {
       g.setLineDash([]);
     };
     if (ov.farm) ring(toX(ov.farm.x), toY(ov.farm.y), ov.farm.r * k, "rgba(226, 85, 63, 0.7)", "rgba(226, 85, 63, 0.10)");
-    if (ov.area_r) ring(W / 2, H / 2, ov.area_r * k, "rgba(255, 94, 168, 0.75)", null, [r(6), r(4)]);
+    if (ov.area_r) ring(heroX, heroY, ov.area_r * k, "rgba(255, 94, 168, 0.75)", null, [r(6), r(4)]);
     if (ov.path && ov.path.length) {
       g.setLineDash([r(5), r(4)]);
       g.strokeStyle = "rgba(95, 163, 138, 0.9)";
@@ -880,7 +891,7 @@ const detailView = {
       g.strokeStyle = "#f0a03a";
       g.lineWidth = r(2);
       g.beginPath();
-      g.moveTo(W / 2, H / 2);
+      g.moveTo(heroX, heroY);
       for (const [x, y] of ov.route) g.lineTo(toX(x), toY(y));
       g.stroke();
     }
@@ -939,9 +950,23 @@ const detailView = {
       g.stroke();
     }
 
-    // postać: złoty pierścień na środku (jak ramka portretu)
+    // "podejdź tutaj": cel jako zielony krzyżyk w kółku + przerywana linia od postaci
+    if (ov.goto) {
+      const X = toX(ov.goto[0]), Y = toY(ov.goto[1]), h = r(7);
+      g.strokeStyle = "#7be08f";
+      g.lineWidth = r(2);
+      g.setLineDash([r(4), r(4)]);
+      g.beginPath(); g.moveTo(heroX, heroY); g.lineTo(X, Y); g.stroke();
+      g.setLineDash([]);
+      g.beginPath(); g.arc(X, Y, h, 0, Math.PI * 2);
+      g.moveTo(X - h - r(3), Y); g.lineTo(X + h + r(3), Y);
+      g.moveTo(X, Y - h - r(3)); g.lineTo(X, Y + h + r(3));
+      g.stroke();
+    }
+
+    // postać: złoty pierścień (na środku, gdy widok ją śledzi)
     g.beginPath();
-    g.arc(W / 2, H / 2, r(7), 0, Math.PI * 2);
+    g.arc(heroX, heroY, r(7), 0, Math.PI * 2);
     g.fillStyle = "#1d1714";
     g.fill();
     g.lineWidth = r(3);
@@ -949,9 +974,46 @@ const detailView = {
     g.stroke();
   },
 
+  viewCenter() {
+    const s = this.snap;
+    return this.center || (s && s.pos ? { x: s.pos.x, y: s.pos.y } : { x: 0, y: 0 });
+  },
+
+  // największe oddalenie: cała mapa z marginesem (wcześniej sztywne 60000 nie mieściło dużych map)
+  maxView() {
+    const img = this.snap && this.mapImage(this.snap.map);
+    const cv = this.canvas, ratio = cv.clientHeight ? cv.clientWidth / cv.clientHeight : 1;
+    if (!img) return 60000;
+    return Math.max(60000, Math.max(img.naturalWidth, img.naturalHeight * ratio) * 100 * 1.08);
+  },
+
   zoom(f) {
-    this.viewWorld = Math.min(60000, Math.max(3000, this.viewWorld * f));
+    this.viewWorld = Math.min(this.maxView(), Math.max(3000, this.viewWorld * f));
     this.draw();
+  },
+
+  fitMap() {
+    const img = this.snap && this.mapImage(this.snap.map);
+    if (!img) return;
+    this.center = { x: img.naturalWidth * 50, y: img.naturalHeight * 50 };
+    this.viewWorld = this.maxView();
+    this.draw();
+  },
+
+  followHero() {
+    this.center = null;
+    this.draw();
+  },
+
+  // punkt ekranu (zdarzenie myszy) -> współrzędne świata, tak jak liczy je draw()
+  toWorld(ev) {
+    const rect = this.canvas.getBoundingClientRect();
+    const k = rect.width / this.viewWorld;          // px CSS na jednostkę świata (jak w draw)
+    const { x: cx, y: cy } = this.viewCenter();
+    return {
+      x: Math.round(cx + (ev.clientX - rect.left - rect.width / 2) / k),
+      y: Math.round(cy + (ev.clientY - rect.top - rect.height / 2) / k),
+    };
   },
 };
 
@@ -993,18 +1055,71 @@ $("#route-clear").addEventListener("click", () => {
 });
 detailView.canvas.addEventListener("click", (ev) => {
   const s = detailView.snap;
+  if (drag.moved) { drag.moved = false; return; }       // koniec przeciągania mapy, nie klik
   if (routeEdit.getAttribute("aria-pressed") !== "true" || !s || !s.pos) return;
-  const rect = detailView.canvas.getBoundingClientRect();
-  const k = rect.width / detailView.viewWorld;          // px CSS na jednostkę świata (jak w draw)
-  routeCommand("waypoint_add", {
-    x: Math.round(s.pos.x + (ev.clientX - rect.left - rect.width / 2) / k),
-    y: Math.round(s.pos.y + (ev.clientY - rect.top - rect.height / 2) / k),
-  });
+  routeCommand("waypoint_add", detailView.toWorld(ev));
 });
+
+/* ---------- przesuwanie mapy przeciąganiem (lewy przycisk) ---------- */
+const drag = { on: false, moved: false, x: 0, y: 0, c: null };
+detailView.canvas.addEventListener("pointerdown", (ev) => {
+  if (ev.button !== 0 || !detailView.snap || !detailView.snap.pos) return;
+  drag.on = true;
+  drag.moved = false;
+  drag.x = ev.clientX;
+  drag.y = ev.clientY;
+  drag.c = detailView.viewCenter();
+});
+window.addEventListener("pointermove", (ev) => {
+  if (!drag.on) return;
+  const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
+  if (!drag.moved && Math.hypot(dx, dy) < 5) return;
+  drag.moved = true;
+  const k = detailView.canvas.getBoundingClientRect().width / detailView.viewWorld;
+  detailView.center = { x: drag.c.x - dx / k, y: drag.c.y - dy / k };
+  detailView.canvas.classList.add("is-panning");
+  detailView.draw();
+});
+window.addEventListener("pointerup", () => {
+  drag.on = false;
+  detailView.canvas.classList.remove("is-panning");
+});
+
+/* ---------- menu pod prawym przyciskiem: podejdź tutaj / punkt trasy ---------- */
+const mapMenu = $("#map-menu");
+let mapMenuAt = null;
+function closeMapMenu() { mapMenu.hidden = true; mapMenuAt = null; }
+detailView.canvas.addEventListener("contextmenu", (ev) => {
+  ev.preventDefault();
+  const s = detailView.snap;
+  if (!s || !s.pos) return;
+  mapMenuAt = detailView.toWorld(ev);
+  const frame = detailView.canvas.parentElement.getBoundingClientRect();
+  mapMenu.style.left = `${ev.clientX - frame.left}px`;
+  mapMenu.style.top = `${ev.clientY - frame.top}px`;
+  $("[data-map='goto_cancel']", mapMenu).hidden = !(s.overlay && s.overlay.goto);
+  mapMenu.hidden = false;
+});
+mapMenu.addEventListener("click", async (ev) => {
+  const b = ev.target.closest("button[data-map]");
+  if (!b || !mapMenuAt) return;
+  const at = mapMenuAt, what = b.dataset.map;
+  closeMapMenu();
+  if (what === "waypoint_add") return routeCommand("waypoint_add", at);
+  try {
+    await sendOption(detailView.pid, what, what === "goto_point" ? at : null);
+    showNotice(what === "goto_point" ? `Idę do (${at.x}, ${at.y}).` : "Anulowano podejście.", "ok");
+    await detailView.refreshSnap();
+  } catch (e) { showNotice(`Podejdź tutaj: ${e.message}`); }
+});
+document.addEventListener("pointerdown", (ev) => { if (!mapMenu.hidden && !ev.target.closest("#map-menu")) closeMapMenu(); });
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") closeMapMenu(); });
 
 wireActions($(".detail-head", detailView.root), () => detailView.pid, async () => { await hub.refresh(); await detailView.refreshSnap(); });
 $("#zoom-in").addEventListener("click", () => detailView.zoom(1 / 1.4));
 $("#zoom-out").addEventListener("click", () => detailView.zoom(1.4));
+$("#zoom-fit").addEventListener("click", () => detailView.fitMap());
+$("#zoom-hero").addEventListener("click", () => detailView.followHero());
 $("#show-names").addEventListener("change", (ev) => { detailView.showNames = ev.target.checked; detailView.draw(); });
 detailView.canvas.addEventListener("wheel", (ev) => { ev.preventDefault(); detailView.zoom(ev.deltaY > 0 ? 1.15 : 1 / 1.15); }, { passive: false });
 new ResizeObserver(() => detailView.draw()).observe(detailView.canvas);

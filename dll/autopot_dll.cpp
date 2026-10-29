@@ -28,11 +28,37 @@
 #include <stdarg.h>
 
 // Log diagnostyczny do pliku (poziom C) - zeby widziec, czy komenda dociera, czy pending-call sie
-// kolejkuje i czy callback sie odpala. Sciezka na sztywno (projekt lokalny).
-#define DBG_PATH "C:\\Metin\\radar-project\\logs\\dll_debug.txt"
+// kolejkuje i czy callback sie odpala. Katalog logs\ liczony z polozenia DLL (<projekt>\dll\autopot.dll
+// -> <projekt>\logs\), zeby przeniesienie/przemianowanie projektu nie gubilo logow ani znacznikow caps/hook
+// (wczesniej sciezka na sztywno C:\Metin\radar-project\ - po przenosinach radar uznawal DLL za stara).
+static char g_logdir[MAX_PATH] = "";
+
+static void init_logdir(HINSTANCE hInst)
+{
+    char p[MAX_PATH];
+    DWORD n = GetModuleFileNameA(hInst, p, MAX_PATH);
+    if (!n || n >= MAX_PATH)
+        return;
+    char *s = strrchr(p, '\\');                            // ...\dll\autopot.dll -> ...\dll
+    if (s) *s = 0;
+    s = strrchr(p, '\\');                                  // ...\dll -> <projekt>
+    if (s) *s = 0;
+    _snprintf(g_logdir, sizeof(g_logdir), "%s\\logs", p);
+    g_logdir[sizeof(g_logdir) - 1] = 0;
+    CreateDirectoryA(g_logdir, NULL);
+}
+
+static void log_path(char *out, size_t cap, const char *name)
+{
+    _snprintf(out, cap, "%s\\%s", g_logdir[0] ? g_logdir : ".", name);
+    out[cap - 1] = 0;
+}
+
 static void dbg(const char *fmt, ...)
 {
-    FILE *f = fopen(DBG_PATH, "a");
+    char path[MAX_PATH];
+    log_path(path, sizeof(path), "dll_debug.txt");
+    FILE *f = fopen(path, "a");
     if (!f)
         return;
     SYSTEMTIME st;
@@ -585,13 +611,15 @@ static void install_vcore_hook(void)
     FlushInstructionCache(GetCurrentProcess(), target, 5);
     dbg("hook: ZAINSTALOWANY na Process (base+0x%X), tramp=%p", (unsigned)g_hook_rva, g_tramp);
 
-    char mk[160];
-    _snprintf(mk, sizeof(mk), "C:\\Metin\\radar-project\\logs\\hook_%lu.ok", GetCurrentProcessId());
+    char mk[MAX_PATH], nm[64];
+    _snprintf(nm, sizeof(nm), "hook_%lu.ok", GetCurrentProcessId());
+    log_path(mk, sizeof(mk), nm);
     FILE *f = fopen(mk, "w");
     if (f) {
         fputs("ok skill chat", f);     // "skill"/"chat" = ta DLL zna komendy !skill / !chat (radar sprawdza)
         fclose(f);
     }
+    dbg("znacznik hook: %s (%s)", mk, f ? "zapisany" : "BLAD zapisu");
 }
 // ===========================================================================================
 
@@ -619,13 +647,15 @@ static DWORD WINAPI server_thread(LPVOID)
         install_vcore_hook();
     } else {
         // GameCoreTop: znacznik mozliwosci tej DLL (radar sprawdza, czy wstrzyknieta wersja zna "!tpick")
-        char mk[MAX_PATH];
-        _snprintf(mk, sizeof(mk), "C:\\Metin\\radar-project\\logs\\caps_%lu.ok", GetCurrentProcessId());
+        char mk[MAX_PATH], nm[64];
+        _snprintf(nm, sizeof(nm), "caps_%lu.ok", GetCurrentProcessId());
+        log_path(mk, sizeof(mk), nm);
         FILE *f = fopen(mk, "w");
         if (f) {
             fputs("tpick attack tattack", f);
             fclose(f);
         }
+        dbg("znacznik caps: %s (%s)", mk, f ? "zapisany" : "BLAD zapisu");
     }
     // python27.dll jest ladowany wczesnie, ale czekamy spokojnie az bedzie gotowy (max ~60 s).
     for (int i = 0; i < 600 && !resolve_python(); ++i)
@@ -789,6 +819,7 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hInst);
+        init_logdir(hInst);                                // GetModuleFileName/CreateDirectory - lekkie
         // W DllMain nie wolno robic nic ciezkiego (loader lock) - od razu oddajemy prace watkowi.
         HANDLE t = CreateThread(NULL, 0, server_thread, NULL, 0, NULL);
         if (t)

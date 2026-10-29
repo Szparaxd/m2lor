@@ -13,6 +13,7 @@ data/workers/<pid>.json (hub znajduje po nim workery; plik znika przy wyjsciu ra
   POST /api/command {"name","value"}    zmiana opcji (jak w panelu); "buff" -> value {"vnum","on"}
   POST /api/shutdown                    zamknij radar (jak krzyzyk okna)
   trasa: name = waypoint_add {"x","y"} / waypoint_undo / waypoint_clear  (jak Ctrl+klik / klawisz C)
+  podejdz tutaj: name = goto_point {"x","y"} (jednorazowy cel z A*, wylacza farme/podazanie) / goto_cancel
   podazanie: name = follow, value {"leader": "Nick", "distance": N} albo {"leader": null}
   akcje jak klawisze radaru: name = action, value reinject (J) / calibrate (K) / rescan (R) / rebuild_map (M)
 Recznie:  curl -H "X-Bot-Token: <token>" http://127.0.0.1:<port>/api/snapshot
@@ -177,6 +178,7 @@ class BotApi:
             "ground": [[round(g[2]), round(g[3])] for g in list(getattr(r, "ground", []) or [])],
             "learned": [[round(x), round(y)] for x, y, *_ in list(getattr(r, "_learned", []) or [])],
             "area_r": round(r.area_atk_radius) if getattr(r, "area_atk_on", False) else None,
+            "goto": [round(gp[0]), round(gp[1])] if (gp := getattr(r, "_goto_point", None)) else None,
         }
 
     def entities(self, hx, hy, radius=ENTITY_R):
@@ -207,6 +209,8 @@ class BotApi:
             fn = self._pot_sizes_fn(value)
         elif name in ("waypoint_add", "waypoint_undo", "waypoint_clear"):
             fn = self._waypoint_fn(name, value)
+        elif name in ("goto_point", "goto_cancel"):
+            fn = self._goto_point_fn(name, value)
         elif name == "follow":
             fn = self._follow_fn(value)
         elif name == "action":
@@ -324,6 +328,37 @@ class BotApi:
                     getattr(self.r, var).set(False)
                     getattr(self.r, handler)()
             fol.start(leader, dist)
+        return fn
+
+    def _goto_point_fn(self, name, value):
+        """'Podejdz tutaj' (PPM na mapie w panelu). Farma trzyma postac w okregu, a podazanie ma wlasne !goto -
+        oba wylaczamy, inaczej walczylyby o ruch. Trasa auto-chodzenia zostaje (wraca po dojsciu)."""
+        r = self.r
+        if not hasattr(r, "set_goto_point"):
+            raise ValueError("podejdz tutaj niedostepne w tej wersji radaru")
+        if name == "goto_point":
+            try:
+                x, y = float(value["x"]), float(value["y"])
+            except (TypeError, KeyError, ValueError):
+                raise ValueError('goto_point: oczekuje {"x": N, "y": N} (wsp. swiata)')
+            if not (math.isfinite(x) and math.isfinite(y) and 0 <= x < 10_000_000 and 0 <= y < 10_000_000):
+                raise ValueError("goto_point: punkt poza mapa")
+        fol = self.follower
+
+        def fn():
+            if name == "goto_cancel":
+                r._goto_point_done("anulowane z panelu", *r._hero_world())
+                return
+            typ, attr, var, handler, _rng = OPTIONS["farm"]
+            if hasattr(r, var) and getattr(r, attr):
+                r._dbg("podejdz: wylaczam farme (walczylaby o ruch)")
+                getattr(r, var).set(False)
+                getattr(r, handler)()
+            try:
+                fol.stop()
+            except Exception:
+                pass
+            r.set_goto_point(x, y)
         return fn
 
     def _waypoint_fn(self, name, value):
