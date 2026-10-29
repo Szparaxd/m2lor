@@ -63,6 +63,7 @@ import botapi
 import calibrate
 import clients
 import collision as collision_mod
+import guard as guard_mod
 import identity
 import map_assets
 import rtti
@@ -754,6 +755,9 @@ class RadarMap:
         self.cape_vnums = []           # vnum peleryn z data/cape_vnums.txt (priorytet = kolejnosc)
         self._cape_vnums_mtime = None
         self._reload_cape_vnums()
+        # ochrona: wykrywanie graczy/GM w poblizu, wstrzymanie bota, dzwiek (recon/guard.py)
+        self.gm_marks = []             # pozycje efektow logo GM (gm.mse) z rescan
+        self.guard = guard_mod.Guard(self, _load_ui_state().get("guard"), lambda st: save_ui_value("guard", st))
         # przygotowanie do walki z bossem/specjalnym (zsiadz + buffy) i powrot na konia po walce
         self.prep_dismount = True      # opcja: zsiadaj z konia przed bossem/specjalnym
         self.prep_buffs = True         # opcja: Szal + Aura przed bossem/specjalnym
@@ -817,6 +821,12 @@ class RadarMap:
         self.cape_var = tk.BooleanVar(value=self.cape_on)
         self.cape_period_var = tk.IntVar(value=int(self.cape_period))
         self.cape_mobs_var = tk.IntVar(value=int(self.cape_min_mobs))
+        self.guard_var = tk.BooleanVar(value=self.guard.on)
+        self.guard_react_var = tk.StringVar(value=self.guard.react)
+        self.guard_stop_var = tk.BooleanVar(value=self.guard.stop)
+        self.guard_sound_var = tk.BooleanVar(value=self.guard.sound)
+        self.guard_radius_var = tk.IntVar(value=int(self.guard.radius))
+        self.guard_resume_var = tk.IntVar(value=int(self.guard.resume))
 
         self.canvas = tk.Canvas(root, width=CANVAS, height=CANVAS, bg="#0b0f0b", highlightthickness=0)
         panel = tk.Frame(root, bg="#0b0f0b")
@@ -918,6 +928,9 @@ class RadarMap:
              self._on_speed_check, "#ff9f1a", "#ffd79a")
         _mkscale("Ruch x", self.movx_var, 1.0, 3.0, 0.1, self._on_movx, "#ff9f1a")
         _mkscale("Atak x", self.atkx_var, 1.0, 3.0, 0.1, self._on_atkx, "#ff9f1a")
+        _chk("Ochrona: wykrywaj graczy i GM", self.guard_var, self._on_guard_opts, "#ff6a6a", "#ffb0b0")
+        _chk("  Przy wykryciu zatrzymaj bota", self.guard_stop_var, self._on_guard_opts, "#ff6a6a", "#ffb0b0")
+        _chk("  Sygnal dzwiekowy", self.guard_sound_var, self._on_guard_opts, "#ff6a6a", "#ffb0b0")
         self.autobuff_var = tk.BooleanVar(value=False)
         _chk("Auto-buff (umiejetnosci na sobie) [U]", self.autobuff_var, self._on_autobuff_check,
              "#7fe0ff", "#c8f2ff")
@@ -1393,6 +1406,12 @@ class RadarMap:
         self.cape_min_mobs = int(float(val))
         save_ui_value("cape_min_mobs", self.cape_min_mobs)
 
+    def _on_guard_opts(self, _val=None):
+        """Wszystkie opcje ochrony naraz (checkboxy i suwaki czytaja swoje zmienne tk)."""
+        self.guard.apply(on=self.guard_var.get(), react=self.guard_react_var.get(), stop=self.guard_stop_var.get(),
+                         sound=self.guard_sound_var.get(), radius=self.guard_radius_var.get(),
+                         resume=self.guard_resume_var.get())
+
     def _on_speed_check(self):
         self.speed_on = bool(self.speed_var.get())
 
@@ -1709,6 +1728,7 @@ class RadarMap:
 
     def rescan(self):
         hero, mapout, player, mobs, effs, metins = None, None, None, [], [], []
+        gm_marks = []
         player_vt = self.vt.get(PLAYER_CLASS)
         # skan tablicy tylko gdy brak RTTI CPythonPlayer I nie mamy wskaznika singletona dla tego buildu
         need_pts_scan = player_vt is None and self.points_addr is None and self.pt_ptr is None
@@ -1750,7 +1770,15 @@ class RadarMap:
                 o = rb + int(h) * 4
                 effs.append(o)
                 fn = self._eff_fname(o)
-                if fn and "metinstone" in fn.lower():
+                if fn and fn.lower().replace("\\", "/").endswith(guard_mod.GM_MARK_SUFFIX):
+                    try:                        # logo GM nad glowa (AFFECT_YMIR) - do ochrony
+                        gx = self.pm.read_float(o + eff_x)
+                        gy = -self.pm.read_float(o + eff_x + 4)
+                    except Exception:
+                        continue
+                    if math.isfinite(gx) and WORLD_MIN < gx < WORLD_MAX:
+                        gm_marks.append((gx, gy))
+                elif fn and "metinstone" in fn.lower():
                     try:
                         mx = self.pm.read_float(o + eff_x)
                         my = -self.pm.read_float(o + eff_x + 4)
@@ -1851,6 +1879,7 @@ class RadarMap:
         self._metin_objs = metin_objs
         self.effs = effs
         self.metins = metins
+        self.gm_marks = gm_marks
 
     def _iter_actors(self, hx, hy):
         """Yield (wx, wy, vnum, is_pc, obj, vid) dla aktorow z sensowna pozycja (bez samego gracza).
@@ -2192,6 +2221,11 @@ class RadarMap:
                 self._autopot_step()
             except Exception as e:
                 self._loop_err("mikstura", e)
+            try:
+                self.guard.step()                   # gracze/GM w poblizu -> hold (czytaja go kroki ponizej)
+            except Exception as e:
+                self._loop_err("ochrona", e)
+            hold = self.guard.hold
             dead = (self._hp <= 0) if self._pts_valid else was_dead   # niewazny odczyt: stan bez zmian
             if dead != was_dead:
                 was_dead = dead
@@ -2199,7 +2233,8 @@ class RadarMap:
             if dead:                                # martwy: zadnych rozkazow ruchu/ataku/zbierania
                 continue
             try:
-                self._autoloot_step()
+                if not (hold and self.guard.paused("loot")):
+                    self._autoloot_step()
             except Exception as e:
                 self._loop_err("loot", e)
             try:
@@ -2207,7 +2242,8 @@ class RadarMap:
             except Exception as e:
                 self._loop_err("walk", e)
             try:
-                self._speed_step()
+                if not (hold and self.guard.paused("speedhack")):
+                    self._speed_step()
             except Exception as e:
                 self._loop_err("speed", e)
             try:
@@ -2215,7 +2251,10 @@ class RadarMap:
             except Exception as e:
                 self._loop_err("farm", e)
             try:
-                self._area_attack_step()
+                if hold and self.area_atk_on and self.guard.paused("atak pakietem"):
+                    self._area_atk_status = "STOP: ochrona (%s)" % self.guard.hold_why
+                else:
+                    self._area_attack_step()
             except Exception as e:
                 self._loop_err("atak", e)
             area_key = (self._area_atk_status or "").split(" ", 1)[0]
@@ -2230,15 +2269,17 @@ class RadarMap:
                     tr.rec("area_status", s=last_area_full, attack_ok=self._attack_ok,
                            tattack_ok=self._tattack_ok, exec=self.dll_exec)
             try:
-                self._cape_step()
+                if not (hold and self.guard.paused("peleryna")):
+                    self._cape_step()
             except Exception as e:
                 self._loop_err("peleryna", e)
             try:
-                self._autobuff_step()
+                if not (hold and self.guard.paused("buff")):
+                    self._autobuff_step()
             except Exception as e:
                 self._loop_err("buff", e)
             try:
-                if self.farm_on or self.autowalk_on:
+                if (self.farm_on or self.autowalk_on) and not (hold and self.guard.paused("wsiadanie na konia")):
                     self._remount_step()
             except Exception as e:
                 self._loop_err("kon", e)
@@ -2545,13 +2586,17 @@ class RadarMap:
                     self._engage(hx, hy, vid, tx, ty, ism)
                     return True
                 self._abandon(vid, why)
-        tgt = pick_fn(hx, hy)
+        if self.guard.hold:
+            # ochrona: nowych celow nie bierzemy - tylko moby, ktore nas blokuja albo bija (dobicie walki)
+            tgt = self._blocker_target(hx, hy) or self._aggressor_target(hx, hy)
+        else:
+            tgt = pick_fn(hx, hy)
         if tgt is None:
             self._appr = None
             self._clear_autoattack()
             self._eng_route = []
             self._combat_target = None
-            self._combat_status = "brak celu"
+            self._combat_status = ("STOP: ochrona (%s)" % self.guard.hold_why) if self.guard.hold else "brak celu"
             return False
         vid, tx, ty, ism, big = tgt
         d = math.hypot(tx - hx, ty - hy)
@@ -3191,6 +3236,9 @@ class RadarMap:
             self.walk_idx %= len(path)
             tx, ty = path[self.walk_idx]
             adv = 0
+        if gp is None and self.guard.hold and math.hypot(tx - hx, ty - hy) < WALK_REACH:
+            self.guard.paused("trasa: kolejny punkt")   # ochrona: doszlismy do biezacego punktu - stoimy
+            return
         # przejdz przez osiagniete waypointy BEZ zatrzymania (od razu kieruj do nastepnego = plynnie)
         while math.hypot(tx - hx, ty - hy) < WALK_REACH and adv < len(path):
             self.walk_idx = (self.walk_idx + 1) % len(path)

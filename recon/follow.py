@@ -138,6 +138,12 @@ class Follower:
         if self._last_pos and math.hypot(hx - self._last_pos[0], hy - self._last_pos[1]) > TELEPORT_JUMP:
             r._eng_route_t = 0.0             # teleport: trasa sprzed skoku jest bez sensu
         self._last_pos = (hx, hy)
+        g = getattr(r, "guard", None)
+        if g is not None and g.hold:             # ochrona: gracz/GM w poblizu - nie idziemy za liderem
+            if g.paused("podazanie"):
+                self.state = "STOP: ochrona (%s)" % g.hold_why
+            self._stop_if_moving()
+            return
 
         b = read_beacon(self.leader)
         if not b or time.time() - b.get("t", 0) > BEACON_STALE:

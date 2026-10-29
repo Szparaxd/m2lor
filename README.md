@@ -54,6 +54,8 @@ narzędzia (ponowne wstrzyknięcie DLL, kalibracja, skan, budowa mapy), ścieżk
 `data/*_vnums.txt` / `radar_mobs.txt` (Ustawienia) oraz logi (Dziennik). Bot działa bez okna
 (`radar_map.py --headless`); stare okno tkinter można włączyć w Ustawieniach do diagnostyki.
 
+**Ochrona** (zakładka w widoku postaci): wykrywa innych graczy w zadanym promieniu i GM w całym zasięgu widzenia. GM rozpoznaje po logo GM nad postacią (efekt `gm.mse`) albo po nicku z prefiksem w nawiasie, np. `[GM]`. Może zatrzymać bota: bot nie bierze wtedy nowych celów, nie zbiera, nie używa ataku pakietem, peleryny, buffów, speedhacka ani podążania. Dokańcza tylko bieg do bieżącego celu i bicie potworów, z którymi walczy. Auto-mikstura działa dalej. Może też dać sygnał dźwiękowy. Bot wznawia pracę po zadanym czasie bez nikogo w pobliżu albo przyciskiem. Postacie z działającym botem są pomijane, a inne nicki do pominięcia wpisz w `data/guard_ignore.txt`, jeden na linię. Ustawienia są wspólne dla wszystkich postaci (`data/ui_state.json`). Niewidzialnego GM nie da się wykryć.
+
 Testy profili i lokalnego API (z osobnym magazynem, bez uruchamiania gry): `python -m unittest discover -s tests -v`.
 
 ## Uruchomienie ręczne (konsola)

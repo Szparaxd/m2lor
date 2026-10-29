@@ -16,6 +16,7 @@ data/workers/<pid>.json (hub znajduje po nim workery; plik znika przy wyjsciu ra
   podejdz tutaj: name = goto_point {"x","y"} (jednorazowy cel z A*, wylacza farme/podazanie) / goto_cancel
   podazanie: name = follow, value {"leader": "Nick", "distance": N} albo {"leader": null}
   akcje jak klawisze radaru: name = action, value reinject (J) / calibrate (K) / rescan (R) / rebuild_map (M)
+                             oraz guard_release (wznow bota po wstrzymaniu ochrony) / guard_test (test dzwieku)
 Recznie:  curl -H "X-Bot-Token: <token>" http://127.0.0.1:<port>/api/snapshot
 """
 import atexit
@@ -66,13 +67,20 @@ OPTIONS = {
     "move_mult":     (float, "move_mult",     "movx_var",          "_on_movx",           (1.0, 3.0)),
     "atk_mult":      (float, "atk_mult",      "atkx_var",          "_on_atkx",           (1.0, 3.0)),
     "autobuff":      (bool,  "autobuff.on",   "autobuff_var",      "_on_autobuff_check", None),
+    "guard":         (bool,  "guard.on",      "guard_var",         "_on_guard_opts",     None),
+    "guard_react":   (str,   "guard.react",   "guard_react_var",   "_on_guard_opts",     None),
+    "guard_stop":    (bool,  "guard.stop",    "guard_stop_var",    "_on_guard_opts",     None),
+    "guard_sound":   (bool,  "guard.sound",   "guard_sound_var",   "_on_guard_opts",     None),
+    "guard_radius":  (int,   "guard.radius",  "guard_radius_var",  "_on_guard_opts",     (500, 10000)),
+    "guard_resume":  (int,   "guard.resume",  "guard_resume_var",  "_on_guard_opts",     (0, 600)),
 }
 _SLIDER_HANDLERS = {"_on_low", "_on_high", "_on_cd", "_on_loot_cd", "_on_loot_radius", "_on_farmr", "_on_movx",
                     "_on_atkx", "_on_area_atk_radius", "_on_cape_period", "_on_cape_mobs"}
 # opcje tekstowe = przelaczniki radiowe w panelu tk: dozwolone wartosci
-CHOICES = {"loot_mode": ("human", "instant", "high"), "area_atk_mode": ("safe", "aggro")}
+CHOICES = {"loot_mode": ("human", "instant", "high"), "area_atk_mode": ("safe", "aggro"),
+           "guard_react": ("all", "gm")}
 # akcje jednorazowe (klawisze radaru); dluzszy limit - wstrzykniecie DLL / kalibracja trwaja kilka sekund
-ACTIONS = ("reinject", "calibrate", "rescan", "rebuild_map")
+ACTIONS = ("reinject", "calibrate", "rescan", "rebuild_map", "guard_release", "guard_test")
 ACTION_TIMEOUT = 30.0
 
 
@@ -148,6 +156,7 @@ class BotApi:
                 "cape_count": getattr(r, "cape_count", 0),
                 "buff_count": getattr(getattr(r, "autobuff", None), "count", 0),
                 "mount": self._mount(),
+                "guard": r.guard.summary() if getattr(r, "guard", None) else None,
             },
             "follow": self.follower.status() if self.follower else None,
         }
@@ -276,6 +285,10 @@ class BotApi:
                 r.calibrate()
             elif value == "rescan":
                 r.rescan()
+            elif value == "guard_release":
+                r.guard.release("recznie z panelu")
+            elif value == "guard_test":
+                r.guard.test_sound()
             else:
                 ma = sys.modules[type(r).__module__].map_assets
                 r._set_map(ma.build_map_image(r.map.name, use_cache=False))

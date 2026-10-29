@@ -38,7 +38,10 @@ const TABS = [
     (s) => `Trasa: ${plural(s.status.waypoints, "punkt", "punkty", "punktów")}. Punkty dodajesz klikając na radarze.`],
   ["Buffy", ["autobuff"], (s) => (s.status.buff ? `${s.status.buff}.` : "Wyłączone.") + ` Użyto: ${s.status.buff_count}.`],
   ["Speedhack", ["speed", "move_mult", "atk_mult"], () => "Test: serwer powinien ucinać zbyt szybki ruch."],
+  ["Ochrona", ["guard", "guard_react", "guard_stop", "guard_sound", "guard_radius", "guard_resume"],
+    (s) => guardText(s.status.guard)],
 ];
+const GUARD_TAB = "Ochrona";
 const FOLLOW_TAB = "Podążanie";
 const OPT = {
   autopot: "Auto-mikstura",
@@ -70,13 +73,21 @@ const OPT = {
   speed: "Speedhack",
   move_mult: ["Mnożnik ruchu", "×", 0.1],
   atk_mult: ["Mnożnik ataku", "×", 0.1],
+  guard: "Wykrywaj graczy i GM w pobliżu",
+  guard_react: "Reaguj na",
+  guard_stop: "Zatrzymaj bota (dokończy tylko bieg do celu i bicie potworów)",
+  guard_sound: "Sygnał dźwiękowy",
+  guard_radius: ["Zasięg wykrywania graczy (GM – cały widok)", "", 100],
+  guard_resume: ["Wznów po (0 = tylko ręcznie)", "s", 10],
 };
 const CHOICE_PL = {
   human: "Jak gracz", instant: "Naraz w zasięgu", high: "Wszystko widoczne",
   safe: "Realistyczny", aggro: "Agresywny",
+  all: "Gracz lub GM", gm: "Tylko GM",
 };
 const ACTION_PL = {
   reinject: "Wstrzyknięcie DLL", calibrate: "Kalibracja", rescan: "Skan potworów", rebuild_map: "Budowa mapy",
+  guard_release: "Wznowienie bota", guard_test: "Test dźwięku",
 };
 // stan pętli autologowania (recon/autologin.py) -> kolor znacznika
 const AL_STATE_OK = new Set(["ingame"]);
@@ -117,6 +128,16 @@ async function post(url, body) {
   const data = await r.json().catch(() => ({}));
   if (!r.ok || data.ok === false) throw new Error(data.error || `HTTP ${r.status}`);
   return data;
+}
+
+// stan ochrony (recon/guard.py, snapshot status.guard) -> zdanie do zakładki i tabliczki
+function guardWho(t) { return `${t.gm ? "GM " : "gracz "}${t.name} (${t.d})`; }
+function guardText(g) {
+  if (!g) return "Ten radar nie ma ochrony – uruchom bota ponownie.";
+  const who = g.threats.length ? ` W pobliżu: ${g.threats.map(guardWho).join(", ")}.` : "";
+  if (g.hold) return `Bot wstrzymany od ${g.since} s: ${g.status.replace(/^STOP: /, "")}.${who}`;
+  if (g.status === "wylaczona") return "Wykrywanie wyłączone.";
+  return (g.threats.length ? "Bez zatrzymania." : "Nikogo w pobliżu.") + who + ` Wykryć od startu: ${g.count}.`;
 }
 
 function plural(n, one, few, many) {
@@ -316,6 +337,11 @@ const listView = {
       if (s.follow && s.follow.leader) parts.push(`Idzie za ${s.follow.leader}: ${s.follow.state}.`);
     }
     foot.textContent = parts.join(" ");
+    const g = s && s.status && s.status.guard;
+    if (g && (g.hold || g.threats.length)) {
+      foot.append(el("span", "warn", g.hold ? ` Bot wstrzymany: ${g.status.replace(/^STOP: /, "")}.`
+        : ` W pobliżu: ${g.threats.map(guardWho).join(", ")}.`));
+    }
     if (!c.window_visible) foot.append(el("span", "warn", " Okno gry jest ukryte."));
   },
 
@@ -573,6 +599,12 @@ const detailView = {
           : dll.startsWith("brak") ? [`Brak DLL ${dll.slice(4)}`, "bad"] : ["DLL bez wykonywania", "warn"]);
       if (st.pot_mode) chips.push([`Mikstury ${st.pot_mode}`, st.pot_mode === "bez fokusu" ? "ok" : "warn"]);
       if (st.mount) chips.push([st.mount.on ? `Na koniu (${st.mount.model})` : "Pieszo", ""]);
+      const g = st.guard;
+      if (g && g.status !== "wylaczona") {
+        const gm = g.threats.some((t) => t.gm);
+        chips.push(g.hold ? [`Wstrzymany: ${gm ? "GM" : "gracz"} w pobliżu`, "bad"]
+          : g.threats.length ? [`${gm ? "GM" : "Gracz"} w pobliżu`, "warn"] : ["Nikogo w pobliżu", "ok"]);
+      }
     }
     const key = JSON.stringify(chips);
     if (box.dataset.key === key) return;
@@ -625,6 +657,39 @@ const detailView = {
     }
     if (this.tab === "Buffy") this.renderBuffs(s.buffs || []);
     if (this.tab === FOLLOW_TAB) this.renderFollow(s);
+    if (this.tab === GUARD_TAB) this.renderGuard(s);
+  },
+
+  renderGuard(s) {
+    let box = $(".guard-actions", this.panel);
+    if (!box) {
+      box = el("div", "opt guard-actions");
+      box.innerHTML = `
+        <div class="form-actions">
+          <button type="button" class="btn btn-gold" data-guard="guard_release">Wznów bota teraz</button>
+          <button type="button" class="btn" data-guard="guard_test">Test dźwięku</button>
+        </div>
+        <p class="hint">GM jest rozpoznawany po logo GM nad postacią (w całym zasięgu widzenia) albo po nicku
+        z prefiksem w nawiasie, np. [GM]. Niewidzialnego GM nie da się wykryć. Twoje postacie z działającym botem
+        są pomijane; inne nicki do pominięcia wpisz w data/guard_ignore.txt (jeden na linię).
+        Po wykryciu bot nie bierze nowych celów, nie zbiera i nie używa ataku pakietem, peleryny, buffów,
+        speedhacka ani podążania. Kończy bieg do bieżącego celu i bicie potworów, które z nim walczą.
+        Auto-mikstura działa dalej.</p>`;
+      this.panel.append(box);
+      box.addEventListener("click", async (ev) => {
+        const b = ev.target.closest("button[data-guard]");
+        if (!b) return;
+        b.disabled = true;
+        try {
+          await sendOption(this.pid, "action", b.dataset.guard);
+          showNotice(`${ACTION_PL[b.dataset.guard]}: gotowe.`, "ok");
+        } catch (e) { showNotice(`${ACTION_PL[b.dataset.guard]}: ${e.message}`); }
+        b.disabled = false;
+      });
+    }
+    const g = s.status.guard;
+    const rel = $("[data-guard=guard_release]", box);
+    if (!rel.matches(":focus")) rel.disabled = !(g && g.hold);
   },
 
   makeControl(name, spec) {
